@@ -1,0 +1,48 @@
+# ---------------- 运行时数据（含敏感信息，务必不要提交） ----------------
+# data/db.json 里有：管理员密码哈希、令牌签名密钥、员工虚拟 Key、
+# 上游渠道真实 API Key、调用明细与用量统计
+data/*
+!data/.gitkeep
+
+# 清空数据时自动生成的备份快照
+db-backup-*.json
+*.db.json
+
+# ---------------- 依赖与构建产物 ----------------
+node_modules/
+.npm/
+package-lock.json.bak
+
+# ---------------- 日志与临时文件 ----------------
+*.log
+logs/
+tmp/
+.tmp/
+*.pid
+*.seed
+
+# 本地测试用的隔离数据目录
+.gwtest/
+
+# ---------------- 环境变量（可能有密钥） ----------------
+.env
+.env.*
+!.env.example
+
+# ---------------- 编辑器与系统 ----------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---------------- 调试残留 ----------------
+.playwright-cli/
+coverage/

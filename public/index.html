@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI API 分流平台</title>
+<link rel="stylesheet" href="/style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%234f46e5'/><path d='M9 21l4-10 4 10M10.5 17.5h5M20 11v10' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+</head>
+<body>
+
+<!-- ============ 登录 ============ -->
+<div id="login" class="login-wrap">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg viewBox="0 0 32 32" width="36" height="36"><rect width="32" height="32" rx="9" fill="#3370ff"/><path d="M9 21l4-10 4 10M10.5 17.5h5M20 11v10" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <h1>AI API 分流平台</h1>
+    <p class="login-sub">内部统一入口 · 部门与员工配额管理</p>
+    <form id="login-form" autocomplete="on">
+      <label class="field">
+        <span>管理员账号</span>
+        <input type="text" id="login-user" value="admin" autocomplete="username" required />
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input type="password" id="login-pass" value="" placeholder="默认 admin123" autocomplete="current-password" required />
+      </label>
+      <div id="login-error" class="login-error"></div>
+      <button type="submit" class="btn btn-primary btn-block" id="login-btn">登 录</button>
+    </form>
+    <p class="login-hint">首次登录请使用 admin / admin123，登录后请在「系统设置」中修改密码。</p>
+  </div>
+</div>
+
+<!-- ============ 主体 ============ -->
+<div id="app" class="app hidden">
+  <aside class="sidebar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" width="28" height="28"><rect width="32" height="32" rx="9" fill="#3370ff"/><path d="M9 21l4-10 4 10M10.5 17.5h5M20 11v10" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div class="brand-text">
+        <strong>分流平台</strong>
+        <span>AI Gateway</span>
+      </div>
+    </div>
+    <nav id="nav" class="nav"></nav>
+    <div class="sidebar-foot">
+      <div class="side-stat" id="side-stat"></div>
+      <button class="btn btn-ghost btn-sm btn-block" id="logout-btn">退出登录</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h2 id="page-title">概览</h2>
+        <p id="page-sub" class="page-sub"></p>
+      </div>
+      <div class="topbar-right">
+        <span class="env-badge" id="env-badge">网关运行中</span>
+        <button class="btn btn-ghost btn-sm" id="refresh-btn">刷新</button>
+      </div>
+    </header>
+    <div id="view" class="view"></div>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root" class="toast-root"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
