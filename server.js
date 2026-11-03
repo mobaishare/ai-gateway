@@ -843,6 +843,8 @@ async function handleApi(req, res, url) {
     if (body.logContentMax !== undefined && body.logContentMax !== null && body.logContentMax !== '') {
       db.settings.logContentMax = Math.min(20000, Math.max(200, Math.round(Number(body.logContentMax) || 2000)));
     }
+    // 流式是否自动补 include_usage（关掉后流式请求只能按文本估算 token）
+    if (typeof body.streamUsage === 'boolean') db.settings.streamUsage = body.streamUsage;
     // 高峰时段规则（北京时间）：工作日 + 多时间窗 + 法定节假日排除
     if (body.peak && typeof body.peak === 'object') {
       const w = db.settings.peak || (db.settings.peak = {});
@@ -1059,6 +1061,8 @@ async function handleGateway(req, res, url) {
       result = await proxy.forward({
         res, body, candidates,
         timeoutMs: db.settings.requestTimeoutMs || 120000,
+        // 流式默认补 include_usage，拿到上游真实 usage；管理员可在设置里关掉
+        forceStreamUsage: db.settings.streamUsage !== false,
       });
     } else if (db.settings.mockWhenNoProvider) {
       const m = await proxy.mockReply({ res, body });

@@ -1,5 +1,30 @@
 # 版本记录
 
+## v1.6.4（2026-11-03）
+
+修的是「网关的 token 数和厂商官网对不上」。根因不在计价公式，而在用量从哪来。
+
+### 修复
+
+- **流式请求拿不到真实 usage**：OpenAI 兼容协议里流式默认不返回 `usage`，必须由请求方声明 `stream_options.include_usage`。此前网关原样转发客户端 body，而多数客户端与 agent 不带这个参数，上游就不给 usage，网关只能按文本估算——agent 长上下文场景下估算值可能只有真实值的三分之一。现在网关默认替客户端补上该参数，拿到真实 usage 后记账；客户端自己设了 `stream_options` 时尊重原值、不覆盖。
+- **流式 usage 解析被嵌套对象截断**：原实现用 `/"usage"\s*:\s*\{([^}]*)\}/` 取对象体，遇到 `prompt_tokens_details: { cached_tokens: N }` 这样的嵌套字段会在第一个 `}` 处停下，把排在后面的 `prompt_tokens` / `completion_tokens` 整段丢掉，于是这次请求被误判成「上游没给 usage」、转身走估算。现改为逐行解析 `data:` 事件、取最后一个含 `usage` 的帧，并补齐嵌套的 `cached_tokens` 与 `cache_creation_input_tokens`。
+- **估算漏算工具定义**：`estimatePrompt()` 只看 `message.content`，没算 `body.tools`（agent 场景 20 多个函数定义可达数万 token）和 `message.tool_calls` 的参数，兜底估算因此系统性偏低。现已计入。
+
+### 新增
+
+- 设置页「调用日志内容」增加开关「流式请求向上游索取真实用量」（`settings.streamUsage`，默认开启）。个别自建代理不认该参数时，网关检测到 400 且报错含 `stream_options` 会用客户端原始请求自动重试一次，不会因此失败。
+
+### 测试
+
+- 端到端 140 项（新增 7 项：自动注入 `include_usage`、流式按上游真实值记账、`usageSource=upstream`、嵌套 `cached_tokens` 解析、客户端显式设置不被覆盖、关闭开关后不注入、关闭后仍能兜底记账）。
+
+### 文档
+
+- 计费手册 3.2.1：新增「token 从哪来：优先上游，兜底才估算」，说明两种来源、落到估算的两种情况与对账方法。
+- 计费手册 6：常见核对问题补 3 行（token 对不上、流式偏小、缓存命中差异）。
+- 操作手册 3.8、API 参考 settings：补充 `streamUsage` 开关说明。
+- README：计价能力表下补一段用量口径说明。
+
 ## v1.6.3（2026-11-03）
 
 只改「自定义时段价」的呈现方式，计价逻辑、数据结构、接口零变化。

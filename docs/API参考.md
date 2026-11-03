@@ -1,6 +1,6 @@
 # API 参考
 
-> 适用版本：**v1.6.3**。管理接口用于二次开发/批量运维，网关接口给员工程序调用。
+> 适用版本：**v1.6.4**。管理接口用于二次开发/批量运维，网关接口给员工程序调用。
 >
 > 手册索引见 [docs/README](README.md)。
 
@@ -363,6 +363,7 @@ TOKEN=$(curl -s -X POST localhost:8787/api/login \
   "alertDimensions": ["dailyTokens", "monthlyTokens"],
   "logContent": "summary",
   "logContentMax": 2000,
+  "streamUsage": true,
   "peak": {
     "enabled": false,
     "days": [1, 2, 3, 4, 5],
@@ -378,6 +379,7 @@ TOKEN=$(curl -s -X POST localhost:8787/api/login \
 - `alertDimensions`：全局默认监控维度，取值 `dailyTokens` / `monthlyTokens`；传空数组同样忽略。
 - `logContent`：调用日志正文留存策略，`off` / `summary` / `full`，默认 `summary`；非这三个值会被忽略。
 - `logContentMax`：摘要模式的最大字符数，**200–20000** 夹取，非数字按 2000。
+- `streamUsage`：流式请求是否自动补 `stream_options.include_usage`（默认 `true`）。开启后上游会在流末尾返回真实 `usage`，日志的 `usageSource` 为 `upstream`；关闭则多半只能按文本估算（`estimated`）。遇到 400 且错误信息提到 `stream_options` 时，网关会自动用客户端原始请求重试一次。
 - `peak`：**全局高峰规则，默认 `enabled: false`**。分时计价默认由每个模型的 `pricing[model].periods` 决定（见 2.7），这里只在「模型填了 `idle`、没配 `periods`」时才有意义；`days` 用 0–6（0=周日），`windows` 最多两项且支持跨零点，`holidays` 为 `YYYY-MM-DD`。
 - 只传 `{peak: {enabled: true}}` 这类局部字段时，其余字段保持原值。
 - `maxBodyBytes` 不在可改字段内，需改 `db.json`。
@@ -519,7 +521,7 @@ TOKEN=$(curl -s -X POST localhost:8787/api/login \
   "settings": { "platformName": "", "adminUser": "admin", "adminPassHash": "", "secret": "",
                 "mockWhenNoProvider": true, "onExceed": "block", "webhookUrl": "", "alertsEnabled": true,
                 "alertThresholds": [80, 100], "alertDimensions": ["dailyTokens", "monthlyTokens"],
-                "logContent": "summary", "logContentMax": 2000,
+                "logContent": "summary", "logContentMax": 2000, "streamUsage": true,
                 "peak": { "enabled": false, "days": [1,2,3,4,5], "windows": [...], "holidays": [] },
                 "periodsMigrated": true,
                 "presetsVersion": "2026-11-03", "createdAt": "" },

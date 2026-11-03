@@ -89,6 +89,7 @@ function startFakeUpstream(port, opts = {}) {
 
       let body = {};
       try { body = JSON.parse(raw || '{}'); } catch { /* ignore */ }
+      server.lastBody = body;   // 供用例断言网关到底往上游发了什么
 
       if (body.stream) {
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -98,10 +99,15 @@ function startFakeUpstream(port, opts = {}) {
         const tick = setInterval(() => {
           if (i >= chunks.length) {
             clearInterval(tick);
+            // 故意把嵌套的 prompt_tokens_details 放在最前：
+            // 老的 `"usage":{([^}]*)}` 正则会在这里截断，把后面的 prompt/completion 全丢掉
             res.write(`data: ${JSON.stringify({
               id, object: 'chat.completion.chunk', model: body.model,
               choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-              usage: { prompt_tokens: 11, completion_tokens: 22, total_tokens: 33, prompt_cache_hit_tokens: 2 },
+              usage: {
+                prompt_tokens_details: { cached_tokens: 3 },
+                prompt_tokens: 11, completion_tokens: 22, total_tokens: 33,
+              },
             })}\n\n`);
             res.write('data: [DONE]\n\n');
             res.end();
@@ -985,6 +991,46 @@ async function callUntilBlocked(key, maxCalls = 60) {
     check('手动打开全局规则 → 旧写法 idle 才生效',
       t18b.data.detail.idle === true && Math.abs(t18b.data.detail.total - 0.015) < 1e-9,
       JSON.stringify({ idle: t18b.data.detail.idle, total: t18b.data.detail.total }));
+
+    // ============================================================
+    section('⑲ 流式用量：自动向上游索取真实 usage');
+    const streamOnce = async (extra = {}) => {
+      const r = await fetch(BASE + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + e11.key },
+        body: JSON.stringify({ model: 'fake-model', stream: true, messages: [{ role: 'user', content: '流式用量' }], ...extra }),
+      });
+      return r.text();
+    };
+
+    await streamOnce();
+    check('流式请求自动补 stream_options.include_usage',
+      upstreamOK.lastBody?.stream_options?.include_usage === true,
+      JSON.stringify(upstreamOK.lastBody?.stream_options));
+
+    const lg19 = await req('/api/logs?employeeId=' + e11.id + '&limit=1', { token: T });
+    const it19 = lg19.data.items[0] || {};
+    check('流式记账用上游真实 token（11/22/33）',
+      it19.promptTokens === 11 && it19.completionTokens === 22 && it19.totalTokens === 33,
+      JSON.stringify({ p: it19.promptTokens, c: it19.completionTokens, t: it19.totalTokens }));
+    check('日志标记 usageSource=上游（不再是估算值）', it19.usageSource === 'upstream', it19.usageSource);
+    check('嵌套的 prompt_tokens_details.cached_tokens 能解析',
+      it19.cacheTokens === 3, String(it19.cacheTokens));
+
+    await streamOnce({ stream_options: { include_usage: false } });
+    check('客户端自己设了 stream_options 就不覆盖',
+      upstreamOK.lastBody?.stream_options?.include_usage === false,
+      JSON.stringify(upstreamOK.lastBody?.stream_options));
+
+    await req('/api/settings', { method: 'PUT', token: T, body: { streamUsage: false } });
+    await streamOnce();
+    check('关掉开关后不再注入 stream_options',
+      upstreamOK.lastBody?.stream_options === undefined,
+      JSON.stringify(upstreamOK.lastBody?.stream_options));
+    const lg19b = await req('/api/logs?employeeId=' + e11.id + '&limit=1', { token: T });
+    check('关掉开关后依然能兜底记账（totalTokens > 0）',
+      lg19b.data.items[0]?.totalTokens > 0, String(lg19b.data.items[0]?.totalTokens));
+    await req('/api/settings', { method: 'PUT', token: T, body: { streamUsage: true } });
 
     // 收尾：恢复默认（全局规则关闭），避免影响后续
     await req('/api/settings', { method: 'PUT', token: T, body: { peak: { ...peakWin, enabled: false } } });

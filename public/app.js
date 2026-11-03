@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------- 基础工具
 
 // 与 package.json 的 version 保持一致（scripts/check-docs.js 会校验）
-const APP_VERSION = '1.6.3';
+const APP_VERSION = '1.6.4';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -1298,6 +1298,17 @@ async function renderSettings() {
             <input type="number" id="set-logmax" min="200" max="20000" value="${s.logContentMax || 2000}" />
             <span class="field-hint">超过时优先保留最近的几条消息，并标记「已截断」。明细只留最近 5000 条，按需调整。</span>
           </label>
+          <div style="margin:4px 0 14px">
+            <label class="switch">
+              <input type="checkbox" id="set-stream-usage" ${s.streamUsage !== false ? 'checked' : ''} />
+              <span class="switch-track"></span>
+              <span class="switch-label">流式请求向上游索取真实用量（include_usage）</span>
+            </label>
+            <span class="field-hint">
+              开启后网关会在流式请求里补 <code>stream_options.include_usage</code>，拿到厂商返回的真实 token 数；
+              关掉则上游多半不返回用量，只能按文本估算，和厂商账单会有偏差。个别不认这个参数的代理会自动退回原始请求重试。
+            </span>
+          </div>
           <button class="btn btn-primary btn-sm" data-act="save-settings">保存设置</button>
         </div>
       </div>
@@ -2662,6 +2673,7 @@ document.addEventListener('click', async (ev) => {
             alertDimensions: $$('.set-alert-dim').filter((x) => x.checked).map((x) => x.value),
             logContent: $('#set-logmode').value,
             logContentMax: Number($('#set-logmax').value) || 2000,
+            streamUsage: $('#set-stream-usage') ? $('#set-stream-usage').checked : true,
           }),
         });
         await refreshAll();

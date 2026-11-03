@@ -48,7 +48,7 @@ docker run -d --name ai-gateway \
 
 数据（`db.json` 与备份）全部在 `ai-gateway-data` 卷里，升级镜像不丢数据。
 
-> 当前版本 **v1.6.3**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+> 当前版本 **v1.6.4**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > **文档**（全部在 [`docs/`](docs/README.md)，含文档维护规则）：
 > - 📘 [操作手册](docs/操作手册.md) —— 管理员日常操作全流程、各页面字段说明、FAQ
@@ -187,6 +187,8 @@ resp = client.chat.completions.create(
 | 按次固定费 | 图像 / 语音 / 检索类 | `perCall`（叠加在 token 费用上） |
 | 加价 / 折扣 | 代理商、内部结算 | `multiplier`（最后相乘） |
 | 完全自定义 | 任何特殊口径 | `formula`（`base * 1.2 + 0.001` 这类算式） |
+
+用量口径与厂商账单对齐：流式请求默认自动补 `stream_options.include_usage`，拿到上游返回的真实 `usage` 再记账（`usageSource=upstream`）；只有上游确实不给时才按文本估算并标记为「估算值」，日志里可以直接筛出来。
 | 固定价 | 智谱等 | `in` / `out` |
 
 内置 8 家厂商 37 个模型的**官方参考价**（2026-11-03 核对，美元按 1:7.2 折算），首次启动自动补入未定价模型，
