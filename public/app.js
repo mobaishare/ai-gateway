@@ -7,6 +7,9 @@
 
 // ---------------------------------------------------------------- 基础工具
 
+// 与 package.json 的 version 保持一致（scripts/check-docs.js 会校验）
+const APP_VERSION = '1.6.3';
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
@@ -21,7 +24,7 @@ const state = {
   settings: null,
   plugins: [],
   pluginId: '',
-  filters: { empKeyword: '', empDept: '', logStatus: '' },
+  filters: { empKeyword: '', empDept: '', logStatus: '', logQ: '' },
 };
 
 const ICON = {
@@ -124,6 +127,37 @@ async function api(path, opts = {}) {
 
 // ---------------------------------------------------------------- 登录
 
+/**
+ * 服务端进程可能还在跑旧代码（改了文件没重启）。静态文件每次都是从磁盘读的，
+ * 于是会出现「新界面 + 旧接口」：点详情提示「接口不存在」。
+ * 这里对比 /healthz 上报的版本，不一致就给出明确提示，省得靠猜。
+ */
+async function checkServerVersion() {
+  try {
+    const res = await fetch('/healthz', { cache: 'no-store' });
+    const d = await res.json();
+    if (d && d.version && 'v' + d.version === 'v' + APP_VERSION) return;
+    showVersionWarn(d && d.version ? 'v' + d.version : '', (d && d.startedAt) || '');
+  } catch {
+    /* 健康检查不可用不影响正常使用 */
+  }
+}
+
+function showVersionWarn(serverVersion, startedAt) {
+  if ($('#version-warn')) return;
+  const el = document.createElement('div');
+  el.id = 'version-warn';
+  el.className = 'version-warn';
+  const when = startedAt ? ` · 启动于 ${new Date(startedAt).toLocaleString('zh-CN', { hour12: false })}` : '';
+  el.innerHTML = `
+    <b>服务端还在运行旧代码</b>
+    <span>界面 v${APP_VERSION}${serverVersion ? ` · 服务端 ${serverVersion}` : ' · 服务端未上报版本'}${when}</span>
+    <span>请重启服务后刷新页面：<code>pkill -f "node server.js" &amp;&amp; npm start</code></span>
+    <button class="btn-link" id="version-warn-close">知道了</button>`;
+  document.body.appendChild(el);
+  $('#version-warn-close').addEventListener('click', () => el.remove());
+}
+
 async function doLogin(e) {
   e.preventDefault();
   const btn = $('#login-btn');
@@ -195,7 +229,8 @@ function renderSideStat() {
   $('#side-stat').innerHTML =
     `今日 <b>${shortNum(o.today.tokens)}</b> tokens · <b>${fmt(o.today.reqs)}</b> 次<br>` +
     `<b>${o.counts.activeEmployees}</b>/<b>${o.counts.employees}</b> 名员工在用 · <b>${o.counts.overrides}</b> 个特例额度<br>` +
-    `渠道 <b>${o.counts.activeProviders}</b>/<b>${o.counts.providers}</b> 启用`;
+    `渠道 <b>${o.counts.activeProviders}</b>/<b>${o.counts.providers}</b> 启用<br>` +
+    `<span style="opacity:.65">前端 v${APP_VERSION}</span>`;
 }
 
 // ---------------------------------------------------------------- 导航
@@ -208,7 +243,7 @@ const ROUTES = [
   { key: 'logs', label: '调用日志', icon: 'log', title: '调用日志', sub: '每一次请求的模型、渠道、耗时与用量' },
   { key: 'docs', label: '接入文档', icon: 'doc', title: '接入文档', sub: '把地址和虚拟密钥发给同事，就能直接调用' },
   { key: 'plugins', label: '扩展插件', icon: 'plug', title: '扩展插件', sub: '点击插件卡片进入，从飞书、企业微信或文本同步部门与员工' },
-  { key: 'settings', label: '系统设置', icon: 'gear', title: '系统设置', sub: '平台名称、超额策略与管理员密码' },
+  { key: 'settings', label: '系统设置', icon: 'gear', title: '系统设置', sub: '平台名称、日志内容、告警通道与管理员密码' },
 ];
 
 function buildNav() {
@@ -409,7 +444,9 @@ function renderDepartments() {
   const rows = items.map((d) => `
     <tr>
       <td>
-        <div class="cell-main">${esc(d.name)}</div>
+        <div class="cell-main">${esc(d.name)}
+          ${d.alert && d.alert.enabled ? `<span class="tag tag-outline" style="font-size:10px;margin-left:4px" title="${esc(d.alert.webhookUrl || '使用全局机器人')}">独立告警</span>` : ''}
+        </div>
         ${d.remark ? `<div class="cell-sub">${esc(d.remark)}</div>` : ''}
       </td>
       <td class="nowrap">
@@ -467,11 +504,14 @@ function renderEmployees() {
   const rows = list.map((e) => {
     const s = e.quotaSnapshot;
     const daily = s.fields.dailyTokens;
-    const ruleTag = (s.hasOverride && s.overrideActive)
+    const alertTag = e.alert && e.alert.enabled
+      ? `<div style="margin-top:2px"><span class="tag tag-outline" style="font-size:10px" title="${esc(e.alert.webhookUrl || '继承部门 / 全局机器人')}">独立告警</span></div>`
+      : '';
+    const ruleTag = ((s.hasOverride && s.overrideActive)
       ? `<span class="tag tag-brand">特例${s.countAgainstDept ? '' : ' · 独立额度'}</span>${s.overrideNote ? `<div class="cell-sub" title="${esc(s.overrideNote)}">${esc(s.overrideNote.slice(0, 22))}${s.overrideNote.length > 22 ? '…' : ''}</div>` : ''}`
       : (s.hasOverride && s.overrideExpired
         ? `<span class="tag tag-warn">特例已过期</span>`
-        : `<span class="tag tag-grey">继承 · ${esc(s.deptName)}</span>`);
+        : `<span class="tag tag-grey">继承 · ${esc(s.deptName)}</span>`)) + alertTag;
 
     return `
       <tr>
@@ -563,7 +603,8 @@ async function renderProviders() {
   const pr = await api('/api/pricing');
   const pricing = pr.items || {};
   const presets = pr.presets || {};
-  const peak = pr.peak || { enabled: true, days: [1, 2, 3, 4, 5], windows: [['09:00', '12:00'], ['14:00', '18:00']], holidays: [] };
+  const peak = pr.peak || { enabled: false, days: [1, 2, 3, 4, 5], windows: [['09:00', '12:00'], ['14:00', '18:00']], holidays: [] };
+  const periodModels = Object.entries(pricing).filter(([, v]) => Array.isArray(v && v.periods) && v.periods.length);
   state.rawPricing = pricing;
 
   const cards = d.items.map((p) => `
@@ -610,7 +651,9 @@ async function renderProviders() {
     <div class="card" style="margin-top:16px">
       <div class="card-head">
         <div>
-          <h3>模型单价 ${pr.peak && pr.peak.enabled !== false ? `<span class="tag ${pr.nowPeak ? 'tag-warn' : 'tag-brand'}" style="font-size:10.5px;padding:1px 8px">${pr.nowPeak ? '当前：高峰时段' : '当前：空闲时段'}</span>` : ''}</h3>
+          <h3>模型单价 ${peak.enabled !== false
+            ? `<span class="tag ${pr.nowPeak ? 'tag-warn' : 'tag-brand'}" style="font-size:10.5px;padding:1px 8px">${pr.nowPeak ? '当前：高峰时段' : '当前：空闲时段'}</span>`
+            : `<span class="tag tag-grey" style="font-size:10.5px;padding:1px 8px">按模型时段计价${periodModels.length ? ` · ${periodModels.length} 个模型已配` : ''}</span>`}</h3>
           <div class="sub">元 / 百万 tokens · 用于成本核算，与转发无关；未定价的模型成本按 0 计${presets.updatedAt ? ` · 内置官方参考价 ${presets.updatedAt}（${presets.total} 个模型，USD 按 1:${presets.usdCny} 折算）` : ''}</div>
         </div>
         <div style="display:flex;gap:8px">
@@ -622,7 +665,7 @@ async function renderProviders() {
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:2px 0 12px;border-bottom:1px solid var(--border);margin-bottom:12px">
           <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap">
             <input type="checkbox" id="pr-peak-enabled" ${peak.enabled !== false ? 'checked' : ''} />
-            启用高峰时段计价
+            启用全局高峰时段（兜底，默认关闭）
           </label>
           <span style="font-size:12.5px">高峰日</span>
           ${['日', '一', '二', '三', '四', '五', '六'].map((d, i) => `
@@ -636,45 +679,66 @@ async function renderProviders() {
           <input type="time" id="pr-w2-end" class="input-sm" style="width:100px" value="${esc(peak.windows?.[1]?.[1] || '18:00')}" />
           <span style="font-size:12.5px">节假日</span>
           <input type="text" id="pr-holidays" class="input-sm" style="flex:1;min-width:180px" value="${esc((peak.holidays || []).join(', '))}" placeholder="法定节假日日期，逗号分隔，如 2026-10-01, 2026-10-02" />
+          <div class="field-hint" style="margin:0;flex-basis:100%">
+            分时计价默认<b>不启用</b>这套全局规则：请点每行「编辑 → 自定义时段价」，按模型自己配时段与价格（内置参考价里的 DeepSeek 已带「工作日高峰 / 工作日空闲 / 周末」三段）。
+            这里打开后只影响「填了右侧空闲价、但没配自定义时段」的模型，配了自定义时段的模型始终以自己的时段表为准。
+          </div>
         </div>
         <div class="table-wrap">
         <table class="tbl price-tbl">
           <thead>
             <tr>
-              <th rowspan="2" class="th-model" style="width:146px">模型</th>
-              <th colspan="4" class="th-group">峰时（默认）</th>
-              <th colspan="4" class="th-group th-group-idle">空闲时段</th>
+              <th rowspan="2" class="th-model" style="width:130px">模型</th>
+              <th colspan="4" class="th-group">基础价 / 峰时</th>
+              <th colspan="4" class="th-group th-group-idle">空闲价（全局规则）</th>
+              <th rowspan="2" style="width:104px">自定义</th>
             </tr>
             <tr>
-              <th style="width:78px">输入</th>
-              <th style="width:78px">输出</th>
-              <th style="width:84px">缓存命中</th>
-              <th style="width:84px">缓存写入</th>
-              <th style="width:78px">输入</th>
-              <th style="width:78px">输出</th>
-              <th style="width:84px">缓存命中</th>
-              <th style="width:84px">缓存写入</th>
+              <th style="width:72px">输入</th>
+              <th style="width:72px">输出</th>
+              <th style="width:78px">缓存命中</th>
+              <th style="width:78px">缓存写入</th>
+              <th style="width:72px">输入</th>
+              <th style="width:72px">输出</th>
+              <th style="width:78px">缓存命中</th>
+              <th style="width:78px">缓存写入</th>
             </tr>
           </thead>
           <tbody>
             ${(() => {
               const models = [...new Set([...d.items.flatMap((p) => p.models || []).filter((m) => m !== '*'), ...Object.keys(pricing)])];
               const numCell = (cls, m, val, ph, tip) => `<td><input type="number" step="0.01" min="0" class="input-sm ${cls}" data-model="${esc(m)}" value="${val ?? ''}" placeholder="${ph}" title="${tip || ph}" /></td>`;
-              const rows = models.map((m) => `
+              const badges = (p) => [
+                p && p.formula ? '<span class="tag tag-brand" style="font-size:10px;padding:0 6px">公式</span>' : '',
+                p && p.perCall ? '<span class="tag tag-outline" style="font-size:10px;padding:0 6px">按次</span>' : '',
+                p && p.multiplier != null && Number(p.multiplier) !== 1 ? `<span class="tag tag-outline" style="font-size:10px;padding:0 6px">×${p.multiplier}</span>` : '',
+                p && Array.isArray(p.periods) && p.periods.length ? `<span class="tag tag-brand" style="font-size:10px;padding:0 6px" title="自定义时段：${esc(p.periods.map((x) => x.name).join(' / '))}">时段 ${p.periods.length}</span>` : '',
+              ].filter(Boolean).join(' ');
+              const rows = models.map((m) => {
+                const p = pricing[m] || {};
+                return `
                 <tr>
-                  <td><span class="tag tag-grey">${esc(m)}</span></td>
-                  ${numCell('pr-in', m, pricing[m]?.in, '未定价', '峰时输入单价（元/百万 tokens）')}
-                  ${numCell('pr-out', m, pricing[m]?.out, '未定价', '峰时输出单价（元/百万 tokens）')}
-                  ${numCell('pr-cachein', m, pricing[m]?.cacheIn, '同输入', '峰时缓存命中输入价，留空按峰时输入价')}
-                  ${numCell('pr-cachewrite', m, pricing[m]?.cacheWrite, '同输入', '峰时缓存写入输入价，留空按峰时输入价')}
-                  ${numCell('pr-idlein', m, pricing[m]?.idle?.in, '不分时', '空闲时段输入单价，留空表示该模型不分时')}
-                  ${numCell('pr-idleout', m, pricing[m]?.idle?.out, '不分时', '空闲时段输出单价，留空沿用峰时输出价')}
-                  ${numCell('pr-idlecachein', m, pricing[m]?.idle?.cacheIn, '同闲入', '空闲时段缓存命中输入价，留空按空闲输入价')}
-                  ${numCell('pr-idlecachewrite', m, pricing[m]?.idle?.cacheWrite, '同闲入', '空闲时段缓存写入输入价，留空按空闲输入价')}
-                </tr>`).join('');
+                  <td>
+                    <span class="tag tag-grey" title="${esc(p.note || '')}">${esc(m)}</span>
+                    ${p.note ? `<div class="cell-sub" title="${esc(p.note)}">${esc(p.note.slice(0, 16))}${p.note.length > 16 ? '…' : ''}</div>` : ''}
+                  </td>
+                  ${numCell('pr-in', m, p.in, '未定价', '基础输入价（元/百万 tokens）；配了自定义时段的模型，未命中时段时也按它计')}
+                  ${numCell('pr-out', m, p.out, '未定价', '基础输出价（元/百万 tokens）')}
+                  ${numCell('pr-cachein', m, p.cacheIn, '同输入', '缓存命中输入价，留空按输入价')}
+                  ${numCell('pr-cachewrite', m, p.cacheWrite, '同输入', '缓存写入输入价，留空按输入价')}
+                  ${numCell('pr-idlein', m, p.idle?.in, '不分时', '空闲价：只有打开全局高峰规则、且该模型没配自定义时段时才生效')}
+                  ${numCell('pr-idleout', m, p.idle?.out, '不分时', '空闲价：留空沿用基础输出价')}
+                  ${numCell('pr-idlecachein', m, p.idle?.cacheIn, '同闲入', '空闲价：缓存命中输入价，留空按空闲输入价')}
+                  ${numCell('pr-idlecachewrite', m, p.idle?.cacheWrite, '同闲入', '空闲价：缓存写入输入价，留空按空闲输入价')}
+                  <td class="nowrap">
+                    <button class="btn-link" data-act="edit-pricing" data-model="${esc(m)}">编辑</button>
+                    <div style="margin-top:2px;line-height:1.4">${badges(p)}</div>
+                  </td>
+                </tr>`;
+              }).join('');
               return rows + `
                 <tr class="price-new-row">
-                  <td><input type="text" class="input-sm" id="pr-new-model" placeholder="新模型名，如 deepseek-flash" style="width:100%" /></td>
+                  <td><input type="text" class="input-sm" id="pr-new-model" placeholder="新模型名" style="width:100%" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-in" placeholder="输入" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-out" placeholder="输出" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-cachein" placeholder="可选" /></td>
@@ -683,15 +747,23 @@ async function renderProviders() {
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-idleout" placeholder="可选" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-idlecachein" placeholder="可选" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-idlecachewrite" placeholder="可选" /></td>
+                  <td><span class="field-hint" style="margin:0">填完点保存</span></td>
                 </tr>`;
             })()}
           </tbody>
         </table>
         </div>
         <p class="field-hint" style="margin-top:10px">
-          高峰时段规则（北京时间 UTC+8）：命中「高峰日 + 高峰时段」按左侧「峰时」四列计，其余（含周末、节假日全天）按右侧「空闲时段」四列计——贴合 DeepSeek 官方（工作日 9:00–12:00、14:00–18:00 为高峰，其余为空闲）。
-          缓存命中/写入：上游 usage 里的缓存 tokens（DeepSeek <code>prompt_cache_hit_tokens</code>、OpenAI <code>cached_tokens</code>、Anthropic <code>cache_creation_input_tokens</code>）自动按对应价核算。
-          留空回落：空闲时段未填「空闲缓存命中/写入」时按「空闲输入」计，未填「空闲输入」时沿用峰时输入；峰时未填缓存价时按峰时输入计。价格随官方调整，以账单为准。
+          <b>分时计价默认走「每个模型自己的时段表」</b>：点某行「编辑」→「自定义时段价」，可以为这个模型单独设生效星期、时间窗（可跨零点）或指定日期，并给每一段配独立的输入/输出/缓存价。
+          内置参考价里的 DeepSeek 已经预填好三段（工作日高峰 9:00–12:00、14:00–18:00；工作日其余时间；周末全天），不用再动全局规则。
+          未配时段、或时刻不在任何时段内 → 按左侧「基础价」计。
+        </p>
+        <p class="field-hint" style="margin-top:4px">
+          右侧「空闲价」是<b>旧版写法</b>：只有勾上「启用全局高峰时段」才参与计算，且优先级低于模型自定义时段；两者都没配的模型不分时。全局规则默认关闭，避免「明明给模型配了时段、却被全局规则盖住」。
+          缓存命中/写入：上游 usage 里的缓存 tokens（DeepSeek <code>prompt_cache_hit_tokens</code>、OpenAI <code>cached_tokens</code>、Anthropic <code>cache_creation_input_tokens</code>）自动按对应价核算；段内没填的缓存价按该段输入价计。
+        </p>
+        <p class="field-hint" style="margin-top:4px">
+          <b>想更自由地算钱？</b>点每行右侧「编辑」可单独为这个模型配置：分档阶梯、每次调用固定费用（如按次计费的图像模型）、成本倍率（加价/折扣）、自定义公式（如 <code>base * 1.2 + 0.001</code>），并在弹窗里直接试算。
         </p>
       </div>
     </div>
@@ -717,9 +789,13 @@ async function renderProviders() {
 // ---------------------------------------------------------------- 日志页
 
 async function renderLogs() {
-  const q = state.filters.logStatus ? `?status=${state.filters.logStatus}` : '';
-  const d = await api('/api/logs' + q);
+  const params = new URLSearchParams();
+  if (state.filters.logStatus) params.set('status', state.filters.logStatus);
+  if (state.filters.logQ) params.set('q', state.filters.logQ);
+  const qs = params.toString();
+  const d = await api('/api/logs' + (qs ? '?' + qs : ''));
   state.logs = d.items;
+  state.logContentMode = d.logContent || 'summary';
 
   const rows = d.items.map((x) => `
     <tr>
@@ -728,17 +804,21 @@ async function renderLogs() {
         <div class="cell-main">${esc(x.employeeName)}</div>
         <div class="cell-sub">${esc(x.deptName)}</div>
       </td>
-      <td><span class="tag tag-grey">${esc(x.model)}</span></td>
+      <td>
+        <span class="tag tag-grey">${esc(x.model)}</span>
+        ${x.preview ? `<div class="cell-sub log-snippet" title="${esc(x.preview)}">${esc(x.preview.slice(0, 40))}${x.preview.length > 40 ? '…' : ''}</div>` : ''}
+      </td>
       <td class="nowrap">${esc(x.providerName)}</td>
-      <td class="num nowrap">${fmt(x.totalTokens)}</td>
+      <td class="num nowrap">${fmt(x.totalTokens)}<div class="cell-sub num">${fmt(x.promptTokens)} / ${fmt(x.completionTokens)}</div></td>
       <td class="num nowrap">${x.cost ? `<b>${costText(x.cost)}</b>` : '<span style="color:var(--muted)">—</span>'}</td>
       <td class="num nowrap" style="color:var(--muted)">${x.latencyMs} ms</td>
       <td class="nowrap">
         <span class="tag ${x.status === 'ok' ? 'tag-ok' : (x.status === 'rejected' ? 'tag-warn' : 'tag-danger')}">
           ${x.status === 'ok' ? '成功' : (x.status === 'rejected' ? '配额拦截' : '失败')}
         </span>
-        ${x.error ? `<div class="cell-sub" title="${esc(x.error)}">${esc(x.error.slice(0, 30))}${x.error.length > 30 ? '…' : ''}</div>` : ''}
+        ${x.error ? `<div class="cell-sub" title="${esc(x.error)}">${esc(x.error.slice(0, 26))}${x.error.length > 26 ? '…' : ''}</div>` : ''}
       </td>
+      <td class="nowrap"><button class="btn-link" data-act="log-detail" data-id="${x.id}">详情</button></td>
     </tr>`).join('');
 
   $('#view').innerHTML = `
@@ -750,16 +830,24 @@ async function renderLogs() {
           <option value="rejected" ${state.filters.logStatus === 'rejected' ? 'selected' : ''}>配额拦截</option>
           <option value="error" ${state.filters.logStatus === 'error' ? 'selected' : ''}>失败</option>
         </select>
+        <input class="input-sm" type="text" id="log-q" placeholder="搜索员工 / 模型 / 提问关键词" value="${esc(state.filters.logQ || '')}" style="width:240px" />
         <span class="tag tag-grey">最近 ${d.items.length} 条</span>
+      </div>
+      <div class="toolbar-right">
+        <span class="field-hint" style="margin:0">
+          ${state.logContentMode === 'off'
+            ? '内容留存已关闭，只记录用量'
+            : `内容留存：${state.logContentMode === 'full' ? '完整' : '摘要'} · 点「详情」看输入输出`}
+        </span>
       </div>
     </div>
     <div class="card">
       <div class="card-body tight table-wrap">
         <table class="tbl">
           <thead><tr>
-            <th>时间</th><th>员工</th><th>模型</th><th>渠道</th><th>Token</th><th>成本</th><th>耗时</th><th>状态</th>
+            <th>时间</th><th>员工</th><th>模型 / 请求内容</th><th>渠道</th><th>Token（入/出）</th><th>成本</th><th>耗时</th><th>状态</th><th style="width:64px">操作</th>
           </tr></thead>
-          <tbody>${rows || '<tr><td colspan="8" class="empty"><strong>还没有调用记录</strong>用「接入文档」里的示例发一个请求试试</td></tr>'}</tbody>
+          <tbody>${rows || '<tr><td colspan="9" class="empty"><strong>还没有调用记录</strong>用「接入文档」里的示例发一个请求试试</td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
@@ -767,6 +855,139 @@ async function renderLogs() {
   $('#log-status').addEventListener('change', (e) => {
     state.filters.logStatus = e.target.value;
     renderLogs();
+  });
+  const search = $('#log-q');
+  search.addEventListener('input', (e) => {
+    state.filters.logQ = e.target.value;
+    clearTimeout(search._t);
+    search._t = setTimeout(() => {
+      const pos = search.selectionStart;
+      renderLogs().then(() => {
+        const again = $('#log-q');
+        if (again) { again.focus(); again.setSelectionRange(pos, pos); }
+      });
+    }, 260);
+  });
+}
+
+/** 调用详情：输入、输出、参数、成本拆解、渠道尝试链都在这里 */
+async function logDetail(id) {
+  let d;
+  try {
+    d = await api('/api/logs/' + encodeURIComponent(id));
+  } catch (e) {
+    // 服务端没有这个路由 = 进程还是更新前的代码（静态页是新版，接口是旧版）
+    if (/接口不存在/.test(e.message)) {
+      showVersionWarn('', '');
+      toast('服务端缺少 GET /api/logs/:id，重启服务后即可查看详情', 'err');
+      return;
+    }
+    toast(e.message, 'err');
+    return;
+  }
+  const log = d.log || null;
+  const req = (log && log.request) || null;
+  const res = (log && log.response) || null;
+  const cd = d.costDetail || null;
+  const p = (req && req.params) || {};
+  const attempts = (log && log.attempts) || [];
+  const statusText = d.status === 'ok' ? '成功' : (d.status === 'rejected' ? '配额拦截' : '失败');
+  const statusCls = d.status === 'ok' ? 'tag-ok' : (d.status === 'rejected' ? 'tag-warn' : 'tag-danger');
+
+  const chip = (k, v) => `<span class="tag tag-outline" style="margin:0 4px 4px 0"><span style="color:var(--muted)">${esc(k)}</span> ${esc(v)}</span>`;
+  const paramChips = [
+    chip('stream', p.stream ? '是' : '否'),
+    chip('temperature', p.temperature == null ? '—' : p.temperature),
+    chip('top_p', p.top_p == null ? '—' : p.top_p),
+    chip('max_tokens', p.max_tokens == null ? '—' : p.max_tokens),
+    chip('tools', p.tools || 0),
+    chip('response_format', p.response_format || '—'),
+  ].join('');
+
+  const msgHtml = req && req.messages && req.messages.length
+    ? req.messages.map((m) => `
+        <div class="log-msg">
+          <div class="log-role ${esc(m.role)}">${esc(m.role || 'unknown')}</div>
+          <pre class="log-body">${esc(m.content || '（空）')}</pre>
+        </div>`).join('')
+    : '<p class="field-hint">这条记录没有留存输入内容（可能是内容留存已关闭，或记录产生于开启之前）。</p>';
+
+  const costRows = cd ? `
+    <table class="preview-table">
+      <tbody>
+        <tr><td>基础 token 费用</td><td class="num">${costText(cd.base)}</td><td class="field-hint" style="margin:0">单价（元/百万）：入 ${cd.prices.in} · 出 ${cd.prices.out}</td></tr>
+        ${cd.period ? `<tr><td>命中时段</td><td class="num"><b>${esc(cd.period.name)}</b></td><td class="field-hint" style="margin:0">该模型自定义时段，按此时段单价计</td></tr>` : ''}
+        ${cd.formula != null ? `<tr><td>自定义公式</td><td class="num"><b>${costText(cd.formula)}</b></td><td class="field-hint" style="margin:0">公式结果替代基础费用</td></tr>` : ''}
+        ${cd.formulaError ? `<tr><td>公式错误</td><td class="num" style="color:var(--danger)">回退基础价</td><td class="field-hint" style="margin:0">${esc(cd.formulaError)}</td></tr>` : ''}
+        ${cd.perCall ? `<tr><td>按次费用</td><td class="num">+ ${costText(cd.perCall)}</td><td class="field-hint" style="margin:0">每次调用固定加收</td></tr>` : ''}
+        ${cd.multiplier && cd.multiplier !== 1 ? `<tr><td>成本倍率</td><td class="num">× ${cd.multiplier}</td><td class="field-hint" style="margin:0">加价 / 折扣</td></tr>` : ''}
+        <tr><td><b>合计</b></td><td class="num"><b>${costText(cd.total)}</b></td><td class="field-hint" style="margin:0">${cd.period ? `时段「${esc(cd.period.name)}」` : (cd.idle ? '按空闲时段价' : '按峰时/基础价')}${cd.tierUpTo ? ` · 命中 ≤${fmt(cd.tierUpTo)} 档` : ''}</td></tr>
+      </tbody>
+    </table>` : '<p class="field-hint">该请求没有产生成本（被拦截、失败或模型未定价）。</p>';
+
+  openModal({
+    title: '调用详情',
+    sub: `${esc(d.employeeName)} · ${esc(d.model)} · ${esc(new Date(d.ts).toLocaleString('zh-CN'))}`,
+    wide: true,
+    body: `
+      <div class="detail-hd">
+        <div class="avatar">${esc((d.employeeName || '?').slice(0, 1))}</div>
+        <div>
+          <div style="font-weight:600;font-size:15px">${esc(d.employeeName)} <span class="tag ${statusCls}" style="margin-left:6px">${statusText}</span></div>
+          <div class="cell-sub">${esc(d.deptName)} · ${esc(d.providerName)} · ${d.latencyMs} ms${d.usageSource === 'estimated' ? ' · Token 为估算值' : ''}</div>
+        </div>
+        <div style="margin-left:auto;text-align:right">
+          <div class="cell-sub">成本</div>
+          <div style="font-size:20px;font-weight:600">${d.cost ? costText(d.cost) : '—'}</div>
+        </div>
+      </div>
+
+      <div class="log-facts">
+        <div><span>请求 ID</span><code>${esc(d.id)}</code></div>
+        <div><span>模型</span><code>${esc(d.model)}${d.upstreamModel && d.upstreamModel !== d.model ? ' → ' + esc(d.upstreamModel) : ''}</code></div>
+        <div><span>输入 tokens</span><b>${fmt(d.promptTokens)}</b></div>
+        <div><span>输出 tokens</span><b>${fmt(d.completionTokens)}</b></div>
+        <div><span>缓存命中</span><b>${fmt(d.cacheTokens)}</b></div>
+        <div><span>缓存写入</span><b>${fmt(d.cacheWriteTokens)}</b></div>
+        <div><span>计入部门池</span><b>${d.countDept ? '是' : '否'}</b></div>
+        <div><span>来源</span><b>${esc(d.source || 'api')}</b></div>
+      </div>
+
+      ${d.error ? `<div class="notice notice-warn" style="margin:0 0 14px">${ICON.warn}<div><b>错误信息</b><br>${esc(d.error)}</div></div>` : ''}
+
+      <div class="section-label">请求参数</div>
+      <div style="margin-bottom:14px">${paramChips}</div>
+
+      <div class="section-label">输入内容${req && req.truncated ? '（已截断）' : ''}</div>
+      <div class="log-thread">${msgHtml}</div>
+
+      <div class="section-label">输出内容${res && res.finishReason ? `（finish_reason: ${esc(res.finishReason)}）` : ''}${res && res.truncated ? ' · 已截断' : ''}</div>
+      ${res && res.content
+        ? `<pre class="log-body" style="max-height:320px;overflow:auto">${esc(res.content)}</pre>`
+        : '<p class="field-hint">没有留存输出内容。</p>'}
+
+      <div class="section-label">成本拆解</div>
+      ${costRows}
+
+      ${attempts.length ? `
+        <div class="section-label">渠道尝试（${attempts.length} 次）</div>
+        <table class="preview-table">
+          <thead><tr><th>渠道</th><th>结果</th><th>状态码</th><th>耗时</th><th>错误</th></tr></thead>
+          <tbody>
+            ${attempts.map((a) => {
+              const name = (state.providers.find((x) => x.id === a.providerId) || {}).name || a.providerId || '—';
+              return `<tr>
+                <td>${esc(name)}</td>
+                <td><span class="tag ${a.ok ? 'tag-ok' : 'tag-danger'}" style="font-size:11px">${a.ok ? '成功' : '失败'}</span></td>
+                <td class="num">${a.status || '—'}</td>
+                <td class="num">${a.latencyMs || 0} ms</td>
+                <td class="cell-sub">${esc(a.error || '—')}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>` : ''}
+    `,
+    footer: `<button class="btn btn-ghost" data-act="close-modal">关闭</button>`,
   });
 }
 
@@ -1010,8 +1231,28 @@ async function renderPluginDetail(id) {
 
 // ---------------------------------------------------------------- 系统设置
 
-function renderSettings() {
+async function renderSettings() {
   const s = state.settings;
+  const dims = Array.isArray(s.alertDimensions) && s.alertDimensions.length ? s.alertDimensions : ['dailyTokens', 'monthlyTokens'];
+  let alertData = { items: [], routes: { departments: [], employees: [] } };
+  try { alertData = await api('/api/alerts?limit=20'); } catch { /* 记录为空时忽略 */ }
+
+  const alertRows = (alertData.items || []).map((a) => `
+    <tr>
+      <td class="nowrap" style="color:var(--muted);font-size:12px">${timeText(a.ts)}</td>
+      <td class="nowrap">${a.target === 'employee' ? '员工' : (a.target === 'department' ? '部门' : '全局')} · ${esc(a.targetName)}</td>
+      <td class="nowrap">${a.test ? '<span class="tag tag-outline">测试</span>' : `${a.dimension === 'monthlyTokens' ? '月 Token' : '日 Token'} ≥ ${a.threshold}%`}</td>
+      <td class="num nowrap">${a.percent ? a.percent + '%' : '—'}</td>
+      <td class="nowrap">${a.channel === 'employee' ? '员工通道' : (a.channel === 'department' ? '部门通道' : '全局通道')}</td>
+      <td class="nowrap"><span class="tag ${a.ok ? 'tag-ok' : 'tag-danger'}">${a.ok ? '已发送' : '失败'}</span>
+        ${a.ok ? '' : `<div class="cell-sub" title="${esc(a.message)}">${esc(String(a.message || '').slice(0, 40))}</div>`}</td>
+    </tr>`).join('');
+
+  const ownRoutes = [
+    ...(alertData.routes?.departments || []).map((x) => `部门「${esc(x.name)}」`),
+    ...(alertData.routes?.employees || []).map((x) => `员工「${esc(x.name)}」`),
+  ];
+
   $('#view').innerHTML = `
     <div class="grid-2">
       <div class="card">
@@ -1041,6 +1282,69 @@ function renderSettings() {
       </div>
 
       <div class="card">
+        <div class="card-head"><div><h3>调用日志内容</h3><div class="sub">记录每次请求的输入与输出，便于排障与审计</div></div></div>
+        <div class="card-body">
+          <label class="field">
+            <span>留存策略</span>
+            <select id="set-logmode">
+              <option value="off" ${s.logContent === 'off' ? 'selected' : ''}>关闭 —— 只记录 token / 成本</option>
+              <option value="summary" ${(!s.logContent || s.logContent === 'summary') ? 'selected' : ''}>摘要 —— 按下方长度截断（推荐）</option>
+              <option value="full" ${s.logContent === 'full' ? 'selected' : ''}>完整 —— 尽量保留全文（上限 20000 字符）</option>
+            </select>
+            <span class="field-hint">日志正文里的 <code>sk-</code> 密钥、Bearer 值会自动打码，不会二次泄漏。</span>
+          </label>
+          <label class="field">
+            <span>摘要最大长度（字符）</span>
+            <input type="number" id="set-logmax" min="200" max="20000" value="${s.logContentMax || 2000}" />
+            <span class="field-hint">超过时优先保留最近的几条消息，并标记「已截断」。明细只留最近 5000 条，按需调整。</span>
+          </label>
+          <button class="btn btn-primary btn-sm" data-act="save-settings">保存设置</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top:16px">
+      <div class="card">
+        <div class="card-head"><div><h3>用量告警（全局默认）</h3><div class="sub">部门、员工没单独配置时用这里的通道与阈值</div></div></div>
+        <div class="card-body">
+          <label class="field">
+            <span>机器人 Webhook 地址</span>
+            <input type="text" id="set-webhook" value="${esc(s.webhookUrl || '')}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/… 或 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…" />
+            <span class="field-hint">支持飞书自定义机器人和企业微信群机器人，按地址自动识别格式。</span>
+          </label>
+          <div style="margin:4px 0 14px">
+            <label class="switch">
+              <input type="checkbox" id="set-alerts" ${s.alertsEnabled !== false ? 'checked' : ''} />
+              <span class="switch-track"></span>
+              <span class="switch-label">启用用量告警</span>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span>默认阈值（%）</span>
+              <input type="text" id="set-alert-th" value="${esc((s.alertThresholds || [80, 100]).join(', '))}" placeholder="80, 100" />
+            </label>
+            <label class="field">
+              <span>默认监控维度</span>
+              <div style="display:flex;gap:14px;padding-top:6px">
+                <label class="switch"><input type="checkbox" class="set-alert-dim" value="dailyTokens" ${dims.includes('dailyTokens') ? 'checked' : ''} /><span class="switch-track"></span><span class="switch-label" style="font-weight:400;font-size:13px">日 Token</span></label>
+                <label class="switch"><input type="checkbox" class="set-alert-dim" value="monthlyTokens" ${dims.includes('monthlyTokens') ? 'checked' : ''} /><span class="switch-track"></span><span class="switch-label" style="font-weight:400;font-size:13px">月 Token</span></label>
+              </div>
+            </label>
+          </div>
+          <div class="notice notice-info" style="margin:6px 0 12px">
+            ${ICON.info}
+            <div><b>告警通道的继承顺序：</b>员工自己的 Webhook → 所属部门的 Webhook → 这里的全局机器人。阈值与维度同理。给每个部门单独建群，就能做到「谁超了只通知谁」。</div>
+          </div>
+          <div style="display:flex;gap:10px">
+            <button class="btn btn-primary btn-sm" data-act="save-settings">保存设置</button>
+            <button class="btn btn-ghost btn-sm" data-act="test-webhook">发送测试消息</button>
+          </div>
+          ${ownRoutes.length ? `<p class="field-hint" style="margin-top:10px">已配置独立通道：${ownRoutes.join('、')}</p>` : ''}
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-head"><div><h3>修改管理员密码</h3><div class="sub">默认密码请务必更换</div></div></div>
         <div class="card-body">
           <label class="field"><span>原密码</span><input type="password" id="pw-old" /></label>
@@ -1051,29 +1355,20 @@ function renderSettings() {
       </div>
     </div>
 
-    <div class="grid-2" style="margin-top:16px">
-      <div class="card">
-        <div class="card-head"><div><h3>用量告警</h3><div class="sub">额度跨过 80% / 100% 时推送群机器人</div></div></div>
-        <div class="card-body">
-          <label class="field">
-            <span>机器人 Webhook 地址</span>
-            <input type="text" id="set-webhook" value="${esc(s.webhookUrl || '')}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/… 或 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…" />
-            <span class="field-hint">支持飞书自定义机器人和企业微信群机器人，按地址自动识别格式。每个阈值每天最多提醒一次，不会刷屏。</span>
-          </label>
-          <div style="margin:4px 0 14px">
-            <label class="switch">
-              <input type="checkbox" id="set-alerts" ${s.alertsEnabled !== false ? 'checked' : ''} />
-              <span class="switch-track"></span>
-              <span class="switch-label">启用用量告警</span>
-            </label>
-          </div>
-          <div style="display:flex;gap:10px">
-            <button class="btn btn-primary btn-sm" data-act="save-settings">保存设置</button>
-            <button class="btn btn-ghost btn-sm" data-act="test-webhook">发送测试消息</button>
-          </div>
-        </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-head">
+        <div><h3>最近告警</h3><div class="sub">成功 ${alertData.okCount || 0} 条 · 失败 ${alertData.failCount || 0} 条（最多保留 200 条）</div></div>
       </div>
+      <div class="card-body tight table-wrap">
+        ${alertRows ? `
+          <table class="tbl">
+            <thead><tr><th>时间</th><th>对象</th><th>触发条件</th><th>用量</th><th>通道</th><th>结果</th></tr></thead>
+            <tbody>${alertRows}</tbody>
+          </table>` : '<div class="empty"><strong>还没有告警记录</strong>额度达到阈值、或点过「发送测试消息」后会出现在这里</div>'}
+      </div>
+    </div>
 
+    <div class="grid-2" style="margin-top:16px">
       <div class="card">
         <div class="card-head"><div><h3>数据管理</h3><div class="sub">清空部门、员工、日志与统计</div></div></div>
         <div class="card-body">
@@ -1084,16 +1379,16 @@ function renderSettings() {
           <button class="btn btn-danger-ghost btn-sm" data-act="reset-data">清空业务数据（保留上游渠道）</button>
         </div>
       </div>
-    </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="card-head"><div><h3>数据备份</h3><div class="sub">导出配置（不含真实密钥与密码）</div></div></div>
-      <div class="card-body">
-        <p class="field-hint" style="margin-top:0;font-size:13px">
-          所有数据保存在 <code style="font-family:var(--mono)">data/db.json</code>，直接复制该文件即可完成备份。
-          下面是脱敏后的配置导出，适合排查问题或迁移结构。
-        </p>
-        <button class="btn btn-ghost btn-sm" data-act="export">下载脱敏配置</button>
+      <div class="card">
+        <div class="card-head"><div><h3>数据备份</h3><div class="sub">导出配置（不含真实密钥与密码）</div></div></div>
+        <div class="card-body">
+          <p class="field-hint" style="margin-top:0;font-size:13px">
+            所有数据保存在 <code style="font-family:var(--mono)">data/db.json</code>，直接复制该文件即可完成备份。
+            下面是脱敏后的配置导出，适合排查问题或迁移结构。
+          </p>
+          <button class="btn btn-ghost btn-sm" data-act="export">下载脱敏配置</button>
+        </div>
       </div>
     </div>`;
 }
@@ -1181,6 +1476,8 @@ function deptForm(dept) {
           </label>`).join('') || '<span class="field-hint">还没有上游渠道</span>'}
       </div>
 
+      ${alertFields('f', d.alert, { dept: true, testId: d.id || '' })}
+
       <label class="switch" style="margin-top:18px">
         <input type="checkbox" id="f-status" ${d.status !== 'disabled' ? 'checked' : ''} />
         <span class="switch-track"></span>
@@ -1192,6 +1489,7 @@ function deptForm(dept) {
       <button class="btn btn-primary" data-act="save-dept" data-id="${d.id || ''}">保存</button>
     `,
   });
+  wireAlertToggle('f');
 }
 
 // ---------------------------------------------------------------- 员工表单（核心）
@@ -1306,12 +1604,15 @@ function empForm(emp) {
 
         <div id="ov-preview"></div>
       </div>
+
+      ${alertFields('e', e.alert, { testId: e.id || '' })}
     `,
     footer: `
       <button class="btn btn-ghost" data-act="close-modal">取消</button>
       <button class="btn btn-primary" data-act="save-emp" data-id="${e.id || ''}">保存</button>
     `,
   });
+  wireAlertToggle('e');
 
   // —— 实时预览：改了任何字段都重算生效额度
   const refreshPreview = () => {
@@ -1496,6 +1797,16 @@ async function empDetail(id) {
           ${snap.models.list.map((m) => `<span class="tag tag-outline" style="margin:2px 4px 2px 0">${esc(m)}</span>`).join('')}
         </div>` : ''}
 
+      <div class="section-label">用量告警</div>
+      <div class="explain" style="margin-top:0">
+        ${emp && emp.alert && emp.alert.enabled
+          ? `<span class="tag tag-brand" style="margin-right:8px">独立通道</span>
+             ${emp.alert.webhookUrl ? '专属 Webhook 已配置' : '未填专属 Webhook，继承部门 / 全局机器人'}　
+             阈值 ${emp.alert.thresholds && emp.alert.thresholds.length ? emp.alert.thresholds.map((t) => t + '%').join(' / ') : '继承'}　
+             维度 ${emp.alert.dimensions && emp.alert.dimensions.length ? emp.alert.dimensions.map((d) => d === 'monthlyTokens' ? '月 Token' : '日 Token').join('、') : '继承'}`
+          : '<span class="tag tag-grey" style="margin-right:8px">继承</span>使用部门或全局的告警通道与阈值'}
+      </div>
+
       ${snap.deptPool ? `
         <div class="section-label">部门池（${esc(snap.deptPool.name)}）</div>
         <div class="explain" style="margin-top:0">
@@ -1582,6 +1893,409 @@ function providerForm(p) {
   });
 }
 
+// ---------------------------------------------------------------- 模型单价：单模型 DIY
+
+/** 从「单模型编辑」弹窗读出定价对象（只返回填了的字段，空值一律删除） */
+function pricingEntryFromForm() {
+  const val = (sel) => {
+    const el = $(sel);
+    if (!el) return undefined;
+    const v = el.value;
+    return v === '' || v == null ? undefined : Math.max(0, Number(v) || 0);
+  };
+  const entry = { in: val('#pf-in') ?? 0, out: val('#pf-out') ?? 0 };
+  const setIf = (k, v) => { if (v !== undefined) entry[k] = v; };
+  setIf('cacheIn', val('#pf-cachein'));
+  setIf('cacheWrite', val('#pf-cachewrite'));
+
+  const idle = {};
+  [['in', '#pf-idle-in'], ['out', '#pf-idle-out'], ['cacheIn', '#pf-idle-cachein'], ['cacheWrite', '#pf-idle-cachewrite']]
+    .forEach(([k, sel]) => { const v = val(sel); if (v !== undefined) idle[k] = v; });
+  if (Object.keys(idle).length) entry.idle = idle;
+
+  const tiers = [];
+  $$('.pf-tier').forEach((tr) => {
+    const upTo = Number($('.pf-t-upto', tr).value) || 0;
+    if (!upTo) return;
+    const t = { upTo: Math.round(upTo) };
+    [['in', '.pf-t-in'], ['out', '.pf-t-out'], ['cacheIn', '.pf-t-cachein'], ['cacheWrite', '.pf-t-cachewrite']]
+      .forEach(([k, sel]) => {
+        const raw = $(sel, tr).value;
+        if (raw !== '') t[k] = Math.max(0, Number(raw) || 0);
+      });
+    tiers.push(t);
+  });
+  if (tiers.length) entry.tiers = tiers.sort((a, b) => a.upTo - b.upTo);
+
+  // 自定义时段：没填时间窗/日期的行直接忽略（避免半填状态导致保存失败）
+  const periods = [];
+  $$('.pf-period').forEach((tr) => {
+    const name = ($('.pf-p-name', tr).value || '').trim();
+    const daysRaw = ($('.pf-p-days', tr).value || '').trim();
+    const timeRaw = ($('.pf-p-win', tr).value || '').trim();
+    if (!timeRaw) return;
+    const p = {};
+    if (name) p.name = name;
+    if (/^(\d{4}-\d{2}-\d{2}\s*[,，]\s*)*\d{4}-\d{2}-\d{2}$/.test(timeRaw)) {
+      p.dates = timeRaw.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+    } else {
+      p.windows = timeRaw;
+      if (daysRaw) p.days = daysRaw;
+    }
+    [['in', '.pf-p-in'], ['out', '.pf-p-out'], ['cacheIn', '.pf-p-cachein'], ['cacheWrite', '.pf-p-cachewrite']]
+      .forEach(([k, sel]) => {
+        const raw = $(sel, tr).value;
+        if (raw !== '') p[k] = Math.max(0, Number(raw) || 0);
+      });
+    periods.push(p);
+  });
+  if (periods.length) entry.periods = periods;
+
+  const perCall = val('#pf-percall');
+  if (perCall !== undefined) entry.perCall = perCall;
+  const multRaw = $('#pf-multiplier')?.value;
+  if (multRaw !== '' && multRaw != null && Number(multRaw) >= 0) entry.multiplier = Number(multRaw);
+  const formula = ($('#pf-formula')?.value || '').trim();
+  if (formula) entry.formula = formula;
+  const note = ($('#pf-note')?.value || '').trim();
+  if (note) entry.note = note;
+  return entry;
+}
+
+/** 把「1-5」「0,6」「1,2,3,4,5」翻成人看的星期文字，看不懂的原样保留 */
+function pfDayLabel(raw) {
+  const N = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  const s = String(raw || '').trim();
+  if (!s) return '每天';
+  const nums = [];
+  const others = [];
+  s.split(/[,，\s]+/).filter(Boolean).forEach((tok) => {
+    const m = tok.match(/^(\d)\s*-\s*(\d)$/);
+    if (m && Number(m[1]) <= 6 && Number(m[2]) <= 6) {
+      const a = Number(m[1]);
+      const b = Number(m[2]);
+      if (a <= b) { for (let i = a; i <= b; i++) nums.push(i); } else { others.push(`${N[a]}~${N[b]}`); }
+      return;
+    }
+    const n = Number(tok);
+    if (Number.isInteger(n) && n >= 0 && n <= 6) nums.push(n);
+    else others.push(tok);
+  });
+  // 连续 3 天以上压成区间（周一~周五），零散的天照原样列举
+  const uniq = [...new Set(nums)].sort((a, b) => a - b);
+  const parts = [];
+  for (let i = 0; i < uniq.length; i++) {
+    let j = i;
+    while (j + 1 < uniq.length && uniq[j + 1] === uniq[j] + 1) j++;
+    parts.push(j - i >= 2 ? `${N[uniq[i]]}~${N[uniq[j]]}` : uniq.slice(i, j + 1).map((d) => N[d]).join('、'));
+    i = j;
+  }
+  return [...parts, ...others].join('、') || '每天';
+}
+
+/** 时段卡片底部的「读作」摘要：把星期、时间窗、价格继承情况讲清楚，边填边刷新 */
+function pfPeriodSummary(card) {
+  const box = $('.pf-p-sum', card);
+  if (!box) return;
+  const winRaw = ($('.pf-p-win', card)?.value || '').trim();
+  const isDates = /^(\d{4}-\d{2}-\d{2}\s*[,，]\s*)*\d{4}-\d{2}-\d{2}$/.test(winRaw);
+  const filled = ['.pf-p-in', '.pf-p-out', '.pf-p-cachein', '.pf-p-cachewrite']
+    .filter((sel) => ($(sel, card)?.value || '').trim() !== '').length;
+
+  let what;
+  if (!winRaw) {
+    what = '<span class="pf-p-warn">还没填时间窗 —— 保存时会跳过这一段</span>';
+  } else if (isDates) {
+    const dates = winRaw.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+    what = `指定日期 ${dates.map((d) => `<code>${esc(d)}</code>`).join(' ')} 整天生效`;
+  } else {
+    const wins = winRaw.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+    what = `每周 ${esc(pfDayLabel($('.pf-p-days', card)?.value))} · ${wins.map((w) => `<code>${esc(w)}</code>`).join(' ')}`;
+  }
+  const priceText = filled === 0
+    ? '价格全部留空 → 跟随基础价'
+    : `已填 ${filled} 个价格${filled < 4 ? '，其余跟随基础价' : ''}`;
+  box.innerHTML = `<span class="pf-p-sum-k">读作</span>${what}<span class="pf-p-sum-sep">·</span>${priceText}`;
+}
+
+/** 时段卡片序号随增删重排 */
+function pfRenumberPeriods() {
+  $$('#pf-period-list .pf-period').forEach((card, i) => {
+    const tag = $('.pf-p-idx', card);
+    if (tag) tag.textContent = `时段 ${i + 1}`;
+  });
+}
+
+/** 单模型编辑弹窗：基础 / 空闲 / 分档 / 自定义时段 / DIY（按次、倍率、公式）/ 试算 */
+function pricingForm(model) {
+  const base = JSON.parse(JSON.stringify((state.rawPricing || {})[model] || { in: '', out: '' }));
+  const idle = base.idle || {};
+  const tierRow = (t) => `
+    <tr class="pf-tier">
+      <td><input type="number" class="input-sm pf-t-upto" min="1" value="${t.upTo ?? ''}" placeholder="262144" /></td>
+      <td><input type="number" class="input-sm pf-t-in" min="0" step="0.01" value="${t.in ?? ''}" placeholder="同基础" /></td>
+      <td><input type="number" class="input-sm pf-t-out" min="0" step="0.01" value="${t.out ?? ''}" placeholder="同基础" /></td>
+      <td><input type="number" class="input-sm pf-t-cachein" min="0" step="0.01" value="${t.cacheIn ?? ''}" placeholder="可选" /></td>
+      <td><input type="number" class="input-sm pf-t-cachewrite" min="0" step="0.01" value="${t.cacheWrite ?? ''}" placeholder="可选" /></td>
+      <td><button class="btn-link danger" data-act="pf-del-tier">删除</button></td>
+    </tr>`;
+
+  // 自定义时段：每段一张卡（原来的 8 列表格挤在 760px 里，时间窗内容看不全）
+  // 时间窗列兼容两种写法——「09:00-12:00, 14:00-18:00」或指定日期「2026-11-11」
+  const periodRow = (p) => {
+    const isDates = Array.isArray(p.dates) && p.dates.length;
+    const daysText = isDates ? '' : (Array.isArray(p.days) && p.days.length ? p.days.join(',') : '');
+    const timeText = isDates ? p.dates.join(', ') : (Array.isArray(p.windows) ? p.windows.map((w) => w.join('-')).join(', ') : '');
+    return `
+    <div class="pf-period">
+      <div class="pf-p-head">
+        <span class="pf-p-idx">时段</span>
+        <input type="text" class="input-sm pf-p-name" value="${esc(p.name || '')}" placeholder="时段名，例如：高峰·工作日 / 空闲·周末" />
+        <button class="btn-link danger" data-act="pf-del-period">删除</button>
+      </div>
+      <div class="pf-p-grid">
+        <label class="pf-p-field">
+          <span>生效星期</span>
+          <input type="text" class="input-sm pf-p-days" value="${esc(daysText)}" placeholder="1-5" ${isDates ? 'disabled title="该段按指定日期生效"' : ''} />
+        </label>
+        <label class="pf-p-field">
+          <span>时间窗 / 指定日期</span>
+          <input type="text" class="input-sm pf-p-win" value="${esc(timeText)}" placeholder="09:00-12:00, 14:00-18:00 或 2026-11-11" />
+        </label>
+      </div>
+      <div class="pf-p-prices">
+        <label class="pf-p-field"><span>输入价</span><input type="number" class="input-sm pf-p-in" min="0" step="0.01" value="${p.in ?? ''}" placeholder="同基础" /></label>
+        <label class="pf-p-field"><span>输出价</span><input type="number" class="input-sm pf-p-out" min="0" step="0.01" value="${p.out ?? ''}" placeholder="同基础" /></label>
+        <label class="pf-p-field"><span>缓存命中</span><input type="number" class="input-sm pf-p-cachein" min="0" step="0.01" value="${p.cacheIn ?? ''}" placeholder="同输入" /></label>
+        <label class="pf-p-field"><span>缓存写入</span><input type="number" class="input-sm pf-p-cachewrite" min="0" step="0.01" value="${p.cacheWrite ?? ''}" placeholder="同输入" /></label>
+      </div>
+      <div class="pf-p-sum"></div>
+    </div>`;
+  };
+
+  openModal({
+    title: `模型单价 · ${model}`,
+    sub: '单价单位：元 / 百万 tokens。这个弹窗只影响该模型，保存后写入单价表',
+    wide: true,
+    body: `
+      <div class="section-label" style="margin-top:0">基础价（峰时 / 不分时）</div>
+      <div class="form-row">
+        <label class="field"><span>输入</span><input type="number" id="pf-in" min="0" step="0.01" value="${base.in ?? ''}" placeholder="必填" /></label>
+        <label class="field"><span>输出</span><input type="number" id="pf-out" min="0" step="0.01" value="${base.out ?? ''}" placeholder="必填" /></label>
+        <label class="field"><span>缓存命中</span><input type="number" id="pf-cachein" min="0" step="0.01" value="${base.cacheIn ?? ''}" placeholder="留空按输入价" /></label>
+        <label class="field"><span>缓存写入</span><input type="number" id="pf-cachewrite" min="0" step="0.01" value="${base.cacheWrite ?? ''}" placeholder="留空按输入价" /></label>
+      </div>
+
+      <div class="section-label">空闲时段价（旧版写法，需要打开「全局高峰时段」才生效 —— 推荐用下文的「自定义时段价」）</div>
+      <div class="form-row">
+        <label class="field"><span>空闲 · 输入</span><input type="number" id="pf-idle-in" min="0" step="0.01" value="${idle.in ?? ''}" placeholder="不分时" /></label>
+        <label class="field"><span>空闲 · 输出</span><input type="number" id="pf-idle-out" min="0" step="0.01" value="${idle.out ?? ''}" placeholder="沿用峰时" /></label>
+        <label class="field"><span>空闲 · 缓存命中</span><input type="number" id="pf-idle-cachein" min="0" step="0.01" value="${idle.cacheIn ?? ''}" placeholder="按空闲输入" /></label>
+        <label class="field"><span>空闲 · 缓存写入</span><input type="number" id="pf-idle-cachewrite" min="0" step="0.01" value="${idle.cacheWrite ?? ''}" placeholder="按空闲输入" /></label>
+      </div>
+
+      <div class="section-label">按输入长度分档（可选，配置后优先于分时）</div>
+      <div class="table-wrap">
+        <table class="tbl pf-tier-tbl">
+          <thead><tr><th>输入上限 upTo</th><th>输入价</th><th>输出价</th><th>缓存命中</th><th>缓存写入</th><th style="width:64px">操作</th></tr></thead>
+          <tbody id="pf-tier-body">${(base.tiers || []).map(tierRow).join('')}</tbody>
+        </table>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="pf-add-tier" style="margin-top:8px">+ 增加一档</button>
+      <p class="field-hint">例如通义千问：≤262144 一档、≤1048576 一档，超出最后一档回落基础价。</p>
+
+      <div class="section-label">自定义时段价（可选，时间规则也按模型自己配）</div>
+      <div class="pf-period-list" id="pf-period-list">${(base.periods || []).map(periodRow).join('')}</div>
+      <p class="field-hint" id="pf-period-empty" ${(base.periods || []).length ? 'style="display:none"' : ''}>还没有时段：点下面「+ 增加一段」，或者用内置参考价里已填好的 DeepSeek 三段做参考。</p>
+      <button class="btn btn-ghost btn-sm" id="pf-add-period" style="margin-top:8px">+ 增加一段</button>
+      <p class="field-hint">
+        典型用法：<b>高峰</b> = 星期 <code>1-5</code> + 时间窗 <code>09:00-12:00, 14:00-18:00</code>；
+        <b>夜间</b> = 星期留空 + <code>00:00-07:00</code>；<b>周末</b> = <code>0,6</code> + <code>00:00-24:00</code>。
+        星期写 <code>1-5</code> / <code>0,6</code>（0=周日），留空=每天；时间窗可跨零点（<code>22:00-06:00</code>），结束写 <code>24:00</code> 表示到当天结束；
+        想按具体日期整天生效（大促、节假日特价），直接在「时间窗 / 指定日期」里写 <code>2026-11-11</code>。
+        每张卡片底部的「读作」会把填的内容翻译成一句人话，填错顺序能立刻看出来。
+        按卡片<b>从上往下先命中先用</b>（写日期的那几段永远先判，用来盖住常规时段），都不命中用基础价。配了自定义时段后，这个模型不再看全局高峰规则与上面的空闲价。
+      </p>
+
+      <div class="section-label">自定义计费（DIY）</div>
+      <div class="form-row">
+        <label class="field">
+          <span>每次调用固定费用（元）</span>
+          <input type="number" id="pf-percall" min="0" step="0.001" value="${base.perCall ?? ''}" placeholder="0 = 不额外收费" />
+          <span class="field-hint">按次计费的模型（图像、语音、检索）用它，叠加在 token 费用上。</span>
+        </label>
+        <label class="field">
+          <span>成本倍率</span>
+          <input type="number" id="pf-multiplier" min="0" step="0.01" value="${base.multiplier ?? ''}" placeholder="1 = 原价" />
+          <span class="field-hint">加价或折扣：1.2 = 上浮 20%，0.8 = 八折，0 = 内部免费。</span>
+        </label>
+      </div>
+      <label class="field">
+        <span>自定义公式（元，留空 = 用上面的单价规则）</span>
+        <input type="text" id="pf-formula" value="${esc(base.formula || '')}" placeholder="例如 base * 1.2 + 0.001 或 prompt * 0.000002 + completion * 0.000008" style="font-family:var(--mono)" />
+        <span class="field-hint">
+          可用变量：<code>prompt</code> <code>completion</code> <code>cacheHit</code> <code>cacheWrite</code> <code>miss</code>
+          <code>inPrice</code> <code>outPrice</code> <code>cacheInPrice</code> <code>cacheWritePrice</code> <code>base</code> <code>calls</code>。
+          只支持 + - * / 和括号；公式结果替代基础 token 费用，之后再叠加「按次」并乘以「倍率」。
+        </span>
+      </label>
+      <label class="field">
+        <span>计费备注</span>
+        <input type="text" id="pf-note" value="${esc(base.note || '')}" placeholder="例如：官方 2026-11 调价；代理商加价 10%" />
+      </label>
+
+      <div class="section-label">试算</div>
+      <div class="form-row">
+        <label class="field"><span>输入 tokens</span><input type="number" id="pf-t-prompt" min="0" value="1000" /></label>
+        <label class="field"><span>输出 tokens</span><input type="number" id="pf-t-completion" min="0" value="500" /></label>
+        <label class="field"><span>缓存命中</span><input type="number" id="pf-t-cachehit" min="0" value="0" /></label>
+        <label class="field"><span>缓存写入</span><input type="number" id="pf-t-cachewrite" min="0" value="0" /></label>
+      </div>
+      <label class="field" style="max-width:300px">
+        <span>试算时刻（留空 = 现在）</span>
+        <input type="datetime-local" id="pf-t-at" />
+        <span class="field-hint">用来验证自定义时段 / 全局峰谷是否命中，例如填周二 10:30 看高峰价。</span>
+      </label>
+      <button class="btn btn-ghost btn-sm" id="pf-test">按当前表单试算（不保存）</button>
+      <div id="pf-result" style="margin-top:10px"></div>
+    `,
+    footer: `
+      <button class="btn btn-ghost" data-act="close-modal">取消</button>
+      <button class="btn btn-primary" data-act="save-pricing-one" data-model="${esc(model)}">保存该模型</button>
+    `,
+  });
+
+  $('#pf-add-tier').addEventListener('click', () => {
+    $('#pf-tier-body').insertAdjacentHTML('beforeend', tierRow({}));
+  });
+
+  const plist = $('#pf-period-list');
+  $$('.pf-period', plist).forEach(pfPeriodSummary);
+  pfRenumberPeriods();
+  plist.addEventListener('input', (ev) => {
+    const card = ev.target.closest('.pf-period');
+    if (card) pfPeriodSummary(card);
+  });
+  $('#pf-add-period').addEventListener('click', () => {
+    plist.insertAdjacentHTML('beforeend', periodRow({}));
+    const card = plist.lastElementChild;
+    pfRenumberPeriods();
+    pfPeriodSummary(card);
+    $('#pf-period-empty')?.style.setProperty('display', 'none');
+    $('.pf-p-name', card)?.focus();
+  });
+  $('#pf-test').addEventListener('click', () => pfTest(model));
+}
+
+/** 试算：把表单里的（可能还没保存的）配置发给后端，用真实计价引擎算一遍 */
+async function pfTest(model) {
+  const box = $('#pf-result');
+  box.innerHTML = '<span class="field-hint">计算中…</span>';
+  try {
+    const entry = pricingEntryFromForm();
+    const atRaw = ($('#pf-t-at')?.value || '').trim();
+    const r = await api('/api/pricing/test', {
+      method: 'POST',
+      body: JSON.stringify({
+        model,
+        pricing: entry,
+        prompt: Number($('#pf-t-prompt').value) || 0,
+        completion: Number($('#pf-t-completion').value) || 0,
+        cacheHit: Number($('#pf-t-cachehit').value) || 0,
+        cacheWrite: Number($('#pf-t-cachewrite').value) || 0,
+        at: atRaw ? new Date(atRaw).toISOString() : undefined,
+      }),
+    });
+    const d = r.detail;
+    const rows = [
+      d.period ? ['命中自定义时段', `「${d.period.name}」`, '按这一段的时间规则与单价计'] : null,
+      !d.period && entry.periods && entry.periods.length ? ['自定义时段', '未命中', '该时刻不在任何时段内，按基础价计'] : null,
+      ['基础 token 费用', costText(d.base), `输入价 ${d.prices.in} / 输出价 ${d.prices.out}（元/百万）`],
+      d.formula != null ? ['公式覆盖', costText(d.formula), '公式结果替代基础费用'] : null,
+      d.formulaError ? ['公式错误', '回退基础价', d.formulaError] : null,
+      d.perCall ? ['按次费用', '+ ' + costText(d.perCall), '每次调用固定加收'] : null,
+      d.multiplier !== 1 ? ['成本倍率', '× ' + d.multiplier, ''] : null,
+    ].filter(Boolean);
+    box.innerHTML = `
+      <table class="preview-table">
+        <tbody>
+          ${rows.map(([k, v, h]) => `<tr><td>${esc(k)}</td><td class="num"><b>${esc(v)}</b></td><td class="field-hint" style="margin:0">${esc(h)}</td></tr>`).join('')}
+          <tr><td><b>合计</b></td><td class="num"><b>${costText(d.total)}</b></td><td class="field-hint" style="margin:0">${d.period ? `自定义时段「${esc(d.period.name)}」` : (d.idle ? '按空闲时段价' : '按峰时/基础价')}${d.tierUpTo ? ` · 命中 ≤${fmt(d.tierUpTo)} 档` : ''}</td></tr>
+        </tbody>
+      </table>`;
+  } catch (e) {
+    box.innerHTML = `<span class="field-hint" style="color:var(--danger)">${esc(e.message)}</span>`;
+  }
+}
+
+// ---------------------------------------------------------------- 告警配置表单块
+
+/** 部门 / 员工共用的告警配置块；dimensions 为空 = 继承上级 */
+function alertFields(prefix, a, opts = {}) {
+  const al = a || {};
+  const isDept = !!opts.dept;
+  const dims = Array.isArray(al.dimensions) ? al.dimensions : [];
+  return `
+    <div class="section-label">用量告警${isDept ? '（部门级）' : '（个人级）'}</div>
+    <label class="switch">
+      <input type="checkbox" id="${prefix}-alert-enabled" ${al.enabled ? 'checked' : ''} />
+      <span class="switch-track"></span>
+      <span class="switch-label">${isDept ? '这个部门用自己的告警通道' : '这名员工用自己的告警通道'}</span>
+    </label>
+    <div id="${prefix}-alert-fields" class="${al.enabled ? '' : 'hidden'}" style="margin-top:10px">
+      <label class="field">
+        <span>告警机器人 Webhook</span>
+        <input type="text" id="${prefix}-alert-url" value="${esc(al.webhookUrl || '')}" placeholder="${isDept ? '留空 = 用系统设置里的全局机器人' : '留空 = 继承部门 / 全局机器人'}" />
+        <span class="field-hint">飞书自定义机器人或企业微信群机器人。填了之后，该对象自己的额度告警只发到这个群。</span>
+      </label>
+      <div class="form-row">
+        <label class="field">
+          <span>触发阈值（%）</span>
+          <input type="text" id="${prefix}-alert-th" value="${esc((al.thresholds || []).join(', '))}" placeholder="留空 = 80, 100" />
+          <span class="field-hint">逗号分隔，如 50, 80, 95。同一个阈值每个统计周期只提醒一次。</span>
+        </label>
+        <label class="field">
+          <span>监控维度</span>
+          <div style="display:flex;gap:14px;padding-top:6px">
+            <label class="switch"><input type="checkbox" class="${prefix}-alert-dim" value="dailyTokens" ${!dims.length || dims.includes('dailyTokens') ? 'checked' : ''} /><span class="switch-track"></span><span class="switch-label" style="font-weight:400;font-size:13px">日 Token</span></label>
+            <label class="switch"><input type="checkbox" class="${prefix}-alert-dim" value="monthlyTokens" ${!dims.length || dims.includes('monthlyTokens') ? 'checked' : ''} /><span class="switch-track"></span><span class="switch-label" style="font-weight:400;font-size:13px">月 Token</span></label>
+          </div>
+        </label>
+      </div>
+      ${opts.testId
+        ? `<button class="btn btn-ghost btn-sm" data-act="${isDept ? 'test-dept-alert' : 'test-emp-alert'}" data-id="${opts.testId}">发送测试消息</button>`
+        : '<p class="field-hint">新建保存后，可在列表里点「测试告警」验证通道。</p>'}
+    </div>`;
+}
+
+/** 从表单读取告警配置 */
+function readAlert(prefix) {
+  const enabled = !!($(`#${prefix}-alert-enabled`) || {}).checked;
+  if (!enabled) return { enabled: false, webhookUrl: '', thresholds: [], dimensions: [] };
+  const thRaw = ($(`#${prefix}-alert-th`) || {}).value || '';
+  const thresholds = thRaw.split(/[,，\s]+/).map(Number)
+    .filter((n) => Number.isFinite(n) && n > 0 && n <= 100)
+    .map((n) => Math.round(n))
+    .filter((n, i, arr) => arr.indexOf(n) === i)
+    .sort((a, b) => a - b);
+  const dimensions = $$(`.${prefix}-alert-dim`).filter((x) => x.checked).map((x) => x.value);
+  return {
+    enabled: true,
+    webhookUrl: (($(`#${prefix}-alert-url`) || {}).value || '').trim(),
+    thresholds,
+    dimensions,
+  };
+}
+
+/** 告警开关联动显示 */
+function wireAlertToggle(prefix) {
+  const box = $(`#${prefix}-alert-enabled`);
+  if (!box) return;
+  box.addEventListener('change', () => {
+    $(`#${prefix}-alert-fields`).classList.toggle('hidden', !box.checked);
+  });
+}
+
 // ---------------------------------------------------------------- 事件绑定
 
 const viewEl = () => $('#view');
@@ -1651,6 +2365,7 @@ document.addEventListener('click', async (ev) => {
           },
           providerIds: $$('.f-prov').filter((c) => c.checked).map((c) => c.value),
           allowedModels: $('#f-models').value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
+          alert: readAlert('f'),
           status: $('#f-status').checked ? 'active' : 'disabled',
         };
         if (!payload.name) { toast('请填写部门名称', 'err'); return; }
@@ -1709,6 +2424,7 @@ document.addEventListener('click', async (ev) => {
             expiresAt: ovEnabled ? ($('#e-ov-expire').value || '') : '',
             note: ovEnabled ? ($('#e-ov-note').value || '') : '',
           },
+          alert: readAlert('e'),
         };
         if (!payload.name) { toast('请填写姓名', 'err'); return; }
         if (!payload.deptId) { toast('请选择部门', 'err'); return; }
@@ -1726,6 +2442,56 @@ document.addEventListener('click', async (ev) => {
       case 'emp-detail':
         await empDetail(id);
         break;
+
+      case 'log-detail':
+        await logDetail(id);
+        break;
+
+      case 'edit-pricing':
+        pricingForm(el.dataset.model);
+        break;
+
+      case 'pf-del-tier':
+      case 'pf-del-period': {
+        const row = el.closest('.pf-period') || el.closest('tr');
+        if (row) row.remove();
+        if (el.dataset.act === 'pf-del-period') {
+          pfRenumberPeriods();
+          const empty = $('#pf-period-empty');
+          if (empty && !$$('#pf-period-list .pf-period').length) empty.style.display = '';
+        }
+        break;
+      }
+
+      case 'save-pricing-one': {
+        const model = el.dataset.model;
+        const entry = pricingEntryFromForm();
+        const base = JSON.parse(JSON.stringify(state.rawPricing || {}));
+        const merged = { ...(base[model] || {}) };
+        for (const k of ['cacheIn', 'cacheWrite', 'idle', 'tiers', 'periods', 'perCall', 'multiplier', 'formula', 'note']) delete merged[k];
+        base[model] = { ...merged, ...entry, in: entry.in ?? 0, out: entry.out ?? 0 };
+        await api('/api/pricing', { method: 'PUT', body: JSON.stringify({ pricing: base }) });
+        closeModal();
+        await renderProviders();
+        toast(`模型「${model}」的单价与计费规则已保存`, 'ok');
+        break;
+      }
+
+      case 'test-dept-alert':
+      case 'test-emp-alert': {
+        el.disabled = true;
+        const label = el.textContent;
+        el.textContent = '发送中…';
+        try {
+          const path = act === 'test-dept-alert' ? `/api/departments/${id}/test-alert` : `/api/employees/${id}/test-alert`;
+          const r = await api(path, { method: 'POST', body: JSON.stringify({}) });
+          toast(r.ok ? '测试消息已发送，去群里看看（通道来源写在消息里）' : `发送失败：${r.message}`, r.ok ? 'ok' : 'err');
+        } finally {
+          el.disabled = false;
+          el.textContent = label;
+        }
+        break;
+      }
 
       case 'rotate-key': {
         if (!confirm('重置后旧密钥立即失效，确定继续？')) return;
@@ -1892,6 +2658,10 @@ document.addEventListener('click', async (ev) => {
             mockWhenNoProvider: $('#set-mock').checked,
             webhookUrl: $('#set-webhook').value.trim(),
             alertsEnabled: $('#set-alerts').checked,
+            alertThresholds: $('#set-alert-th').value.split(/[,，\s]+/).map(Number).filter((n) => n > 0 && n <= 100),
+            alertDimensions: $$('.set-alert-dim').filter((x) => x.checked).map((x) => x.value),
+            logContent: $('#set-logmode').value,
+            logContentMax: Number($('#set-logmax').value) || 2000,
           }),
         });
         await refreshAll();
@@ -2059,6 +2829,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 (function boot() {
+  checkServerVersion();
   const [initial, sub] = location.hash.replace('#/', '').split('/');
   if (ROUTES.some((r) => r.key === initial)) state.view = initial;
   if (initial === 'plugins' && sub) state.pluginId = sub;

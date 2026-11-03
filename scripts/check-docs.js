@@ -10,6 +10,8 @@
  *   1. 每份手册头部的「适用版本」必须等于 package.json 的 version
  *   2. README 里写的「当前版本」必须等于 package.json 的 version
  *   3. 文档里的相对链接（xxx.md / xxx.yml）必须真实存在
+ *   4. public/app.js 的 APP_VERSION 必须等于 package.json 的 version
+ *      （前端靠它和 /healthz 对比，判断服务端是不是还在跑旧代码）
  *
  * 用法：node scripts/check-docs.js   失败退出码 1
  */
@@ -71,6 +73,15 @@ for (const file of files) {
     const abs = path.resolve(path.dirname(file), target);
     if (!fs.existsSync(abs)) errors.push(`${name}: 链接目标不存在 → ${target}`);
   }
+}
+
+// —— 4. 前端版本号与 package.json 一致
+const appJsPath = path.join(ROOT, 'public', 'app.js');
+if (fs.existsSync(appJsPath)) {
+  const appJs = fs.readFileSync(appJsPath, 'utf8');
+  const am = appJs.match(/const APP_VERSION = '([\d.]+)';/);
+  if (!am) errors.push('public/app.js: 找不到 `const APP_VERSION = \'x.y.z\';`');
+  else if (am[1] !== VERSION) errors.push(`public/app.js: APP_VERSION 是 ${am[1]}，package.json 是 ${VERSION}`);
 }
 
 // —— 附加：文档里不该出现「项测试」以外的过时测试数量（常见笔误如 39 项）

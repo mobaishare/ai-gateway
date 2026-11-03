@@ -1031,3 +1031,164 @@ pre.code .k { color: #8ab4ff; }
 .price-tbl thead tr:nth-child(2) th:nth-child(1) { border-left: 1px solid var(--line); }
 .price-tbl td:nth-child(6) { border-left: 1px solid var(--line); }
 .price-tbl .price-new-row td { background: #fafbfc; }
+
+/* ---------------- 调用日志详情 ---------------- */
+.log-snippet {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.log-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 16px;
+  padding: 12px 14px;
+  margin: 0 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.log-facts > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.log-facts span { font-size: 11.5px; color: var(--muted); }
+.log-facts code, .log-facts b { font-size: 12.5px; word-break: break-all; }
+.log-thread { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.log-msg {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.log-role {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  background: #f4f6f8;
+  color: #57606a;
+  text-transform: uppercase;
+}
+.log-role.system { background: #eef4ff; color: #1d4ed8; }
+.log-role.user { background: #eefaf3; color: #0f7b47; }
+.log-role.assistant { background: #f5f0ff; color: #6b46c1; }
+.log-role.tool { background: #fff7e6; color: #955c00; }
+.log-body {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #fff;
+  color: var(--text);
+  max-height: 260px;
+  overflow: auto;
+}
+.pf-tier-tbl td { padding: 4px 6px; }
+.pf-tier-tbl .input-sm { width: 100%; min-width: 0; text-align: right; }
+
+/* 模型单价 · 自定义时段：每段一张卡（原来 8 列表格挤在 760px 弹窗里，时间窗内容看不全） */
+.pf-period-list { display: flex; flex-direction: column; gap: 10px; }
+.pf-period {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  padding: 10px 12px 11px;
+}
+.pf-p-head { display: flex; align-items: center; gap: 9px; }
+.pf-p-idx {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: .3px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.pf-p-name { flex: 1 1 auto; min-width: 0; height: 32px; font-weight: 600; }
+.pf-p-head .btn-link { flex: none; }
+.pf-p-grid {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 9px 10px;
+  margin-top: 9px;
+}
+.pf-p-prices {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px 10px;
+  margin-top: 9px;
+}
+.pf-p-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pf-p-field > span { font-size: 11.5px; color: var(--muted); }
+.pf-p-field .input-sm { width: 100%; min-width: 0; height: 32px; }
+.pf-p-field .pf-p-days,
+.pf-p-field .pf-p-win { font-family: var(--mono); font-size: 12.5px; }
+.pf-p-prices .input-sm { text-align: right; }
+.pf-p-sum {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.pf-p-sum-k { color: var(--muted); }
+.pf-p-sum code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.pf-p-sum-sep { color: var(--muted); }
+.pf-p-warn { color: var(--warn); }
+@media (max-width: 760px) {
+  .pf-p-grid { grid-template-columns: minmax(0, 1fr); }
+  .pf-p-prices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .log-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* 服务端仍在跑旧代码时的底部提示条 */
+.version-warn {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 999;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  max-width: min(820px, calc(100vw - 32px));
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  border: 1px solid #f5c79c;
+  background: var(--warn-soft);
+  color: #8a4b00;
+  font-size: 12.5px;
+  line-height: 1.55;
+  box-shadow: var(--shadow);
+}
+.version-warn b { font-weight: 600; }
+.version-warn code {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #f0d2bb;
+  background: #fff;
+  color: #8a4b00;
+  white-space: nowrap;
+}
+.version-warn .btn-link { margin-left: auto; color: #8a4b00; }

@@ -22,10 +22,14 @@ const proxy = require('./lib/proxy');
 const plugins = require('./lib/plugins');
 const alerts = require('./lib/alerts');
 const { PRESETS, presetSummary } = require('./lib/preset-prices');
+const { compile } = require('./lib/formula');
+
+const pkg = require('./package.json');
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const BOOT_AT = new Date().toISOString();
 
 // ---------------------------------------------------------------- 启动准备
 
@@ -159,6 +163,53 @@ function parseModelList(v) {
   return [...new Set(arr.map((s) => String(s).trim()).filter(Boolean))];
 }
 
+/** 告警配置清洗：部门/员工共用同一套结构 */
+function sanitizeAlert(input, existing) {
+  const a = input || existing || {};
+  return {
+    enabled: !!a.enabled,
+    webhookUrl: String(a.webhookUrl || '').trim(),
+    // 空数组 = 继承上级（部门级继承全局，员工级继承部门）
+    thresholds: alerts.normThresholds(a.thresholds),
+    dimensions: alerts.normDimensions(a.dimensions),
+  };
+}
+
+/** 日志列表只回传摘要，正文放在详情接口里，避免列表接口撑爆 */
+function logBrief(x, empMap, deptMap, provMap) {
+  const log = x.log || null;
+  const msgs = log && log.request && Array.isArray(log.request.messages) ? log.request.messages : [];
+  const lastUser = [...msgs].reverse().find((m) => m.role === 'user') || msgs[msgs.length - 1];
+  return {
+    id: x.id,
+    ts: x.ts,
+    employeeId: x.employeeId,
+    deptId: x.deptId,
+    providerId: x.providerId,
+    model: x.model,
+    promptTokens: x.promptTokens,
+    completionTokens: x.completionTokens,
+    cacheTokens: x.cacheTokens,
+    cacheWriteTokens: x.cacheWriteTokens,
+    totalTokens: x.totalTokens,
+    cost: x.cost,
+    costDetail: x.costDetail || null,
+    latencyMs: x.latencyMs,
+    status: x.status,
+    source: x.source,
+    countDept: x.countDept,
+    error: x.error,
+    usageSource: x.usageSource || '',
+    upstreamModel: x.upstreamModel || '',
+    hasContent: !!log,
+    contentChars: log ? ((log.request && log.request.chars) || 0) + ((log.response && log.response.chars) || 0) : 0,
+    preview: lastUser ? String(lastUser.content || '').replace(/\s+/g, ' ').slice(0, 80) : (x.error || ''),
+    employeeName: empMap.get(x.employeeId) || '（已删除）',
+    deptName: deptMap.get(x.deptId) || '—',
+    providerName: x.providerId === 'mock' ? '内置模拟' : (provMap.get(x.providerId) || '—'),
+  };
+}
+
 function sanitizeDept(input, existing) {
   const q = input.quota || {};
   const pick = (f) => (quota.num(q[f]) === null ? 0 : quota.num(q[f]));
@@ -175,6 +226,7 @@ function sanitizeDept(input, existing) {
     providerIds: Array.isArray(input.providerIds) ? input.providerIds.filter(Boolean) : [],
     // 允许的模型：空数组 = 不限制；支持通配（gpt-4o*）
     allowedModels: parseModelList(input.allowedModels),
+    alert: sanitizeAlert(input.alert, existing && existing.alert),
     status: input.status === 'disabled' ? 'disabled' : 'active',
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -205,6 +257,7 @@ function sanitizeEmployee(input, existing) {
     key: existing?.key || store.genKey(),
     status: input.status === 'disabled' ? 'disabled' : 'active',
     override,
+    alert: sanitizeAlert(input.alert, existing && existing.alert),
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -436,6 +489,46 @@ async function handleApi(req, res, url) {
     }
   }
 
+  const deptAlertTest = p.match(/^\/api\/departments\/([^/]+)\/test-alert$/);
+  if (deptAlertTest && method === 'POST') {
+    const dept = store.findDept(deptAlertTest[1]);
+    if (!dept) return fail(res, 404, '部门不存在');
+    const body = await readBody(req, 64 * 1024).catch(() => ({}));
+    const r = await alerts.testTarget({ dept, overrideUrl: body && body.webhookUrl });
+    return json(res, 200, r);
+  }
+
+  const empAlertTest = p.match(/^\/api\/employees\/([^/]+)\/test-alert$/);
+  if (empAlertTest && method === 'POST') {
+    const emp = store.findEmployee(empAlertTest[1]);
+    if (!emp) return fail(res, 404, '员工不存在');
+    const dept = emp.deptId ? store.findDept(emp.deptId) : null;
+    const body = await readBody(req, 64 * 1024).catch(() => ({}));
+    const r = await alerts.testTarget({ employee: emp, dept, overrideUrl: body && body.webhookUrl });
+    return json(res, 200, r);
+  }
+
+  // ---------------- 告警记录
+  if (p === '/api/alerts' && method === 'GET') {
+    const limit = Number(url.searchParams.get('limit')) || 50;
+    const items = alerts.recent(limit);
+    const okCount = items.filter((x) => x.ok).length;
+    return json(res, 200, {
+      items,
+      total: items.length,
+      okCount,
+      failCount: items.length - okCount,
+      routes: (() => {
+        // 让设置页能显示「哪些对象有自己的通道」，不暴露 webhook 全文
+        const mask = (u) => (u ? String(u).replace(/^(https?:\/\/[^/]+).*$/, '$1/…') : '');
+        return {
+          departments: db.departments.filter((d) => d.alert && d.alert.enabled).map((d) => ({ id: d.id, name: d.name, url: mask(d.alert.webhookUrl) })),
+          employees: db.employees.filter((e) => e.alert && e.alert.enabled).map((e) => ({ id: e.id, name: e.name, url: mask(e.alert.webhookUrl) })),
+        };
+      })(),
+    });
+  }
+
   // ---------------- 渠道
   if (p === '/api/providers' && method === 'GET') {
     // 返回时对密钥打码，避免前端/浏览器里出现真实 key
@@ -488,26 +581,53 @@ async function handleApi(req, res, url) {
   }
 
   // ---------------- 日志
+  const nameMaps = () => ({
+    empMap: new Map(db.employees.map((e) => [e.id, e.name])),
+    deptMap: new Map(db.departments.map((d) => [d.id, d.name])),
+    provMap: new Map(db.providers.map((x) => [x.id, x.name])),
+  });
+
   if (p === '/api/logs' && method === 'GET') {
     const limit = Math.min(500, Number(url.searchParams.get('limit')) || 100);
     const empId = url.searchParams.get('employeeId') || '';
     const deptId = url.searchParams.get('deptId') || '';
     const status = url.searchParams.get('status') || '';
+    const model = url.searchParams.get('model') || '';
+    const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
     let list = db.usage.slice().reverse();
     if (empId) list = list.filter((x) => x.employeeId === empId);
     if (deptId) list = list.filter((x) => x.deptId === deptId);
     if (status) list = list.filter((x) => x.status === status);
-    const empMap = new Map(db.employees.map((e) => [e.id, e.name]));
-    const deptMap = new Map(db.departments.map((d) => [d.id, d.name]));
-    const provMap = new Map(db.providers.map((x) => [x.id, x.name]));
+    if (model) list = list.filter((x) => x.model === model);
+    if (q) {
+      // 关键词只搜「员工名 / 模型 / 错误 / 最后一条提问」，不扫全文，避免大库变慢
+      const emps = new Map(db.employees.map((e) => [e.id, e.name.toLowerCase()]));
+      list = list.filter((x) => {
+        const msgs = x.log && x.log.request ? x.log.request.messages || [] : [];
+        const last = [...msgs].reverse().find((m) => m.role === 'user');
+        return String(x.model).toLowerCase().includes(q)
+          || String(x.error || '').toLowerCase().includes(q)
+          || (emps.get(x.employeeId) || '').includes(q)
+          || (last && String(last.content || '').toLowerCase().includes(q));
+      });
+    }
+    const { empMap, deptMap, provMap } = nameMaps();
     return json(res, 200, {
-      items: list.slice(0, limit).map((x) => ({
-        ...x,
-        employeeName: empMap.get(x.employeeId) || '（已删除）',
-        deptName: deptMap.get(x.deptId) || '—',
-        providerName: x.providerId === 'mock' ? '内置模拟' : (provMap.get(x.providerId) || '—'),
-      })),
+      items: list.slice(0, limit).map((x) => logBrief(x, empMap, deptMap, provMap)),
       total: list.length,
+      logContent: db.settings.logContent || 'summary',
+    });
+  }
+
+  const logMatch = p.match(/^\/api\/logs\/([^/]+)$/);
+  if (logMatch && method === 'GET') {
+    const item = db.usage.find((x) => x.id === logMatch[1]);
+    if (!item) return fail(res, 404, '日志不存在或已被裁剪（明细只保留最近 5000 条）');
+    const { empMap, deptMap, provMap } = nameMaps();
+    return json(res, 200, {
+      ...logBrief(item, empMap, deptMap, provMap),
+      log: item.log || null,
+      attempts: (item.log && item.log.attempts) || [],
     });
   }
 
@@ -589,11 +709,110 @@ async function handleApi(req, res, url) {
           .sort((a, b) => a.upTo - b.upTo);
         if (tiers.length) entry.tiers = tiers;
       }
+      // 模型自定义时段价（可选）：每段自带时间规则与单价，优先于「idle + 全局峰谷规则」
+      if (Array.isArray(v.periods)) {
+        const list = [];
+        for (let i = 0; i < v.periods.length; i++) {
+          const raw = v.periods[i];
+          if (!raw || typeof raw !== 'object') continue;
+          const label = String(raw.name || '').trim().slice(0, 20) || `时段 ${i + 1}`;
+          let days = null;
+          if (raw.days !== undefined && raw.days !== null && raw.days !== '') {
+            days = store.parseDaySpec(raw.days);
+            if (!days) return fail(res, 400, `模型「${name}」第 ${i + 1} 个时段「${label}」的生效星期无法识别（用 1-5 或 0,6，0=周日）`);
+          }
+          const dates = Array.isArray(raw.dates)
+            ? [...new Set(raw.dates.map((x) => String(x || '').trim()).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x)))].sort()
+            : [];
+          let windows = [];
+          const wsrc = raw.windows;
+          if (typeof wsrc === 'string') {
+            const parsed = store.parseWindowSpec(wsrc);
+            if (!parsed) return fail(res, 400, `模型「${name}」第 ${i + 1} 个时段「${label}」的时间窗无法识别（形如 09:00-12:00, 14:00-18:00）`);
+            windows = parsed;
+          } else if (Array.isArray(wsrc)) {
+            for (const w of wsrc) {
+              if (typeof w === 'string') {
+                const parsed = store.parseWindowSpec(w);
+                if (!parsed) return fail(res, 400, `模型「${name}」第 ${i + 1} 个时段「${label}」的时间窗无法识别（形如 09:00-12:00）`);
+                windows.push(...parsed);
+              } else if (Array.isArray(w) && w.length === 2) {
+                const a = store.parseHM(w[0]);
+                const b = store.parseHM(w[1]);
+                if (a == null || b == null || a === b) return fail(res, 400, `模型「${name}」第 ${i + 1} 个时段「${label}」的时间窗无法识别（形如 09:00-12:00）`);
+                windows.push([store.normHM(w[0]), store.normHM(w[1])]);
+              }
+            }
+          }
+          if (!windows.length && !dates.length) {
+            return fail(res, 400, `模型「${name}」第 ${i + 1} 个时段「${label}」既没填时间窗也没填指定日期`);
+          }
+          const item = { name: label };
+          if (dates.length) item.dates = dates;
+          if (windows.length) {
+            item.windows = windows;
+            item.days = days || [0, 1, 2, 3, 4, 5, 6];
+          }
+          for (const k of ['in', 'out', 'cacheIn', 'cacheWrite']) {
+            if (raw[k] !== undefined && raw[k] !== null && raw[k] !== '') {
+              item[k] = Math.max(0, Number(raw[k]) || 0);
+            }
+          }
+          list.push(item);
+        }
+        if (list.length) entry.periods = list;
+      }
+      // 每次调用固定费用（元）
+      if (v.perCall !== undefined && v.perCall !== null && v.perCall !== '') {
+        entry.perCall = Math.max(0, Number(v.perCall) || 0);
+      }
+      // 成本倍率（0 表示免费，1 或不填表示原价）
+      if (v.multiplier !== undefined && v.multiplier !== null && v.multiplier !== '') {
+        const m = Number(v.multiplier);
+        if (!Number.isFinite(m) || m < 0) return fail(res, 400, `模型「${name}」的倍率必须是不小于 0 的数字`);
+        entry.multiplier = m;
+      }
+      // 自定义公式：保存前先编译，语法错误直接 400，避免上线后算不出成本
+      if (v.formula !== undefined && v.formula !== null && String(v.formula).trim()) {
+        const c = compile(v.formula);
+        if (!c.ok) return fail(res, 400, `模型「${name}」的公式有误：${c.error}`);
+        entry.formula = String(v.formula).trim();
+      }
+      if (v.note !== undefined && v.note !== null) entry.note = String(v.note).trim().slice(0, 200);
       out[name] = entry;
     }
     db.pricing = out;
     store.save();
-    return json(res, 200, { ok: true });
+    return json(res, 200, { ok: true, count: Object.keys(out).length });
+  }
+
+  // 单模型试算：body.pricing 传未保存的配置也能算，方便编辑弹窗里即时预览
+  if (p === '/api/pricing/test' && method === 'POST') {
+    const body = await readBody(req, 128 * 1024);
+    const model = String(body.model || '').trim();
+    const entry = body.pricing && typeof body.pricing === 'object' ? body.pricing : db.pricing[model];
+    if (!entry) return fail(res, 400, '该模型还没有定价，请先填写输入/输出单价');
+    if (body.pricing && entry.formula) {
+      const c = compile(entry.formula);
+      if (!c.ok) return fail(res, 400, `公式有误：${c.error}`);
+    }
+    const at = body.at ? Date.parse(body.at) : Date.now();
+    const detail = store.modelCostDetail(
+      model,
+      Number(body.prompt) || 0,
+      Number(body.completion) || 0,
+      Number(body.cacheHit) || 0,
+      Number(body.cacheWrite) || 0,
+      Number.isFinite(at) ? at : Date.now(),
+      entry,
+    );
+    return json(res, 200, {
+      ok: true,
+      model,
+      detail,
+      nowPeak: store.isPeakNow(),
+      nowIdle: store.isIdleNow(),
+    });
   }
 
   // ---------------- 设置
@@ -610,6 +829,20 @@ async function handleApi(req, res, url) {
     if (typeof body.mockWhenNoProvider === 'boolean') db.settings.mockWhenNoProvider = body.mockWhenNoProvider;
     if (typeof body.webhookUrl === 'string') db.settings.webhookUrl = body.webhookUrl.trim();
     if (typeof body.alertsEnabled === 'boolean') db.settings.alertsEnabled = body.alertsEnabled;
+    // 告警全局默认（部门/员工没单独配置时用它）
+    if (Array.isArray(body.alertThresholds)) {
+      const list = alerts.normThresholds(body.alertThresholds);
+      if (list.length) db.settings.alertThresholds = list;
+    }
+    if (Array.isArray(body.alertDimensions)) {
+      const list = alerts.normDimensions(body.alertDimensions);
+      db.settings.alertDimensions = list.length ? list : db.settings.alertDimensions;
+    }
+    // 调用日志内容留存策略
+    if (['off', 'summary', 'full'].includes(body.logContent)) db.settings.logContent = body.logContent;
+    if (body.logContentMax !== undefined && body.logContentMax !== null && body.logContentMax !== '') {
+      db.settings.logContentMax = Math.min(20000, Math.max(200, Math.round(Number(body.logContentMax) || 2000)));
+    }
     // 高峰时段规则（北京时间）：工作日 + 多时间窗 + 法定节假日排除
     if (body.peak && typeof body.peak === 'object') {
       const w = db.settings.peak || (db.settings.peak = {});
@@ -772,6 +1005,9 @@ async function handleGateway(req, res, url) {
   }
   if (!body.model) return fail(res, 400, '缺少参数 model');
 
+  // 日志内容摘要（是否落盘、截断多少由 settings.logContent / logContentMax 决定）
+  const reqSummary = proxy.summarizeRequest(body);
+
   // —— 3. 模型权限校验（部门默认 → 员工特例覆盖，与额度同一套继承规则）
   const modelPolicy = quota.resolveModels(emp, dept);
   if (modelPolicy && !quota.modelAllowed(modelPolicy.list, body.model)) {
@@ -779,7 +1015,7 @@ async function handleGateway(req, res, url) {
     store.recordUsage({
       employeeId: emp.id, deptId: dept ? dept.id : '', model: body.model,
       totalTokens: 0, status: 'rejected', source: 'api', countDept: true,
-      error: reason,
+      error: reason, request: reqSummary,
     });
     return fail(res, 403, reason, { code: 'model_not_allowed', type: 'model_not_allowed' });
   }
@@ -792,7 +1028,7 @@ async function handleGateway(req, res, url) {
     store.recordUsage({
       employeeId: emp.id, deptId: dept ? dept.id : '', model: body.model,
       totalTokens: 0, status: 'rejected', source: 'api', countDept: check.effective.countAgainstDept,
-      error: check.reason,
+      error: check.reason, request: reqSummary,
     });
     const headers = { 'Retry-After': '60' };
     res.writeHead(429, {
@@ -826,7 +1062,19 @@ async function handleGateway(req, res, url) {
       });
     } else if (db.settings.mockWhenNoProvider) {
       const m = await proxy.mockReply({ res, body });
-      result = { ok: true, status: 200, usage: m.usage, providerId: 'mock', latencyMs: Date.now() - startedAt };
+      // 模拟响应也要把输出正文、finish_reason、渠道尝试带进日志，
+      // 否则「没有启用渠道」时点详情只有输入、看不到输出。
+      result = {
+        ok: true,
+        status: 200,
+        usage: m.usage,
+        providerId: 'mock',
+        completionText: m.completionText || '',
+        finishReason: m.finishReason || 'stop',
+        usageSource: m.usageSource || 'upstream',
+        attempts: [{ providerId: 'mock', ok: true, status: 200, latencyMs: Date.now() - startedAt }],
+        latencyMs: Date.now() - startedAt,
+      };
     } else {
       result = { ok: false, status: 503, usage: {}, error: '没有可用渠道支持该模型，且未开启模拟响应' };
     }
@@ -854,6 +1102,12 @@ async function handleGateway(req, res, url) {
     source: 'api',
     countDept: check.effective.countAgainstDept,
     error: result.error || '',
+    request: reqSummary,
+    response: result.completionText || '',
+    finishReason: result.finishReason || '',
+    usageSource: result.usageSource || '',
+    upstreamModel: result.upstreamModel || '',
+    attempts: result.attempts || [],
   });
   if (rec.status === 'ok') {
     alerts.check({ employee: emp, dept, effective: check.effective, platformName: db.settings.platformName });
@@ -922,7 +1176,13 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (url.pathname === '/healthz') {
-      return json(res, 200, { ok: true, uptime: Math.round(process.uptime()), ts: new Date().toISOString() });
+      return json(res, 200, {
+        ok: true,
+        version: pkg.version,
+        startedAt: BOOT_AT,
+        uptime: Math.round(process.uptime()),
+        ts: new Date().toISOString(),
+      });
     }
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
     if (url.pathname.startsWith('/v1/')) return await handleGateway(req, res, url);
