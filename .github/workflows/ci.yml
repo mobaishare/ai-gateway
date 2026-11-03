@@ -17,10 +17,13 @@ jobs:
 
       - name: 语法检查
         run: |
-          for f in server.js lib/*.js public/app.js; do
+          for f in server.js lib/*.js public/app.js scripts/*.js; do
             node --check "$f"
             echo "OK  $f"
           done
+
+      - name: 文档一致性检查
+        run: node scripts/check-docs.js
 
       - name: 端到端回归测试
         run: node test/run.js

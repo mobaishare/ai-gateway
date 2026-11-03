@@ -1,5 +1,18 @@
 # 版本记录
 
+## v1.3.3（2026-11-03）
+
+### 文档
+
+- **文档体系重建，全部对齐 v1.3.x 的实际功能**。此前手册停留在 v1.1.0，缺成本核算、告警、模型权限、Docker/CI 等内容。
+- 新增 [docs/README.md](docs/README.md)：文档地图 + **文档维护硬规则**（改代码必须同批更新对应手册，含「改了什么 → 改哪份文档」对照表）。
+- 重写 [docs/操作手册.md](docs/操作手册.md)：补齐概览成本 KPI、部门模型白名单、员工模型权限覆盖、渠道单价卡（参考价/高峰规则/高级 JSON）、日志成本列、系统设置告警块；新增 403 `model_not_allowed` 说明与相关 FAQ。
+- 新增 [docs/计费与成本核算.md](docs/计费与成本核算.md)：定价数据结构、计算顺序与公式、三个算例、峰谷规则与节假日维护、8 家厂商 37 个模型的参考价表、对账常见问题、改汇率/更新参考价流程。
+- 新增 [docs/告警与运维手册.md](docs/告警与运维手册.md)：告警触发条件与去重策略、消息格式、配置与排障；部署（环境变量 / Docker / systemd / Nginx / CI）、备份恢复升级、排障速查、安全加固清单。
+- 新增 [docs/API参考.md](docs/API参考.md)：管理 API（含 employees 的 quota/rotate/reset-usage、pricing/presets、settings/test-webhook、settings/password）、网关 API 处理顺序、错误码表、`db.json` 结构摘要。
+- 更新 [docs/插件开发手册.md](docs/插件开发手册.md)：版本与测试数量同步；新增「新增插件后的文档同步清单」。
+- 更新 README：版本号、文档索引、模型权限/成本核算/用量告警三节、目录结构（`alerts.js`、`preset-prices.js`、`docs/`、`Dockerfile`、CI）、接口一览、测试覆盖说明（76 项）。
+
 ## v1.3.2（2026-11-03）
 
 ### 新增
