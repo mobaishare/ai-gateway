@@ -1,9 +1,18 @@
 # AI API 分流平台
 
+![CI](https://github.com/mobaishare/ai-gateway/actions/workflows/ci.yml/badge.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Node](https://img.shields.io/badge/node-%E2%89%A518-green.svg)
+
 公司内部用的 AI 接口网关。**员工拿不到上游真实密钥**，每人一个平台签发的虚拟 Key，
 按「部门 → 员工」两层分配用量额度，员工个人的特殊额度优先于部门默认值。
 
 零外部依赖，`node server.js` 就能跑，数据存单个 JSON 文件，内网部署和备份都很省事。
+
+**核心能力**：四维度配额（日/月 Token、RPM、并发）· 逐字段特例继承 ·
+模型白名单（部门默认 + 个人覆盖）· **成本核算看板**（按模型单价折算 ¥）·
+**用量告警**（80%/100% 推送飞书/企微机器人）· 加权分流 + 故障切换 · SSE 流式 ·
+组织架构同步插件（飞书/企微/CSV）
 
 ---
 
@@ -23,7 +32,20 @@ node server.js
 
 改成自定义端口：`PORT=9000 node server.js`
 
-> 当前版本 **v1.1.0**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+### Docker 部署
+
+```bash
+docker build -t ai-gateway .
+docker run -d --name ai-gateway \
+  -p 8787:8787 \
+  -v ai-gateway-data:/app/data \
+  --restart unless-stopped \
+  ai-gateway
+```
+
+数据（`db.json` 与备份）全部在 `ai-gateway-data` 卷里，升级镜像不丢数据。
+
+> 当前版本 **v1.2.0**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > **文档**：
 > - 📘 [操作手册](docs/操作手册.md) —— 管理员日常操作全流程、部署、FAQ

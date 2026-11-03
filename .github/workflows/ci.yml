@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 语法检查
+        run: |
+          for f in server.js lib/*.js public/app.js; do
+            node --check "$f"
+            echo "OK  $f"
+          done
+
+      - name: 端到端回归测试
+        run: node test/run.js

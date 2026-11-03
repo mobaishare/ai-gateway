@@ -20,6 +20,7 @@ const store = require('./lib/store');
 const quota = require('./lib/quota');
 const proxy = require('./lib/proxy');
 const plugins = require('./lib/plugins');
+const alerts = require('./lib/alerts');
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -151,6 +152,12 @@ function empWithQuota(emp) {
   };
 }
 
+/** 解析模型列表输入：逗号/换行/空格分隔，支持通配 */
+function parseModelList(v) {
+  const arr = Array.isArray(v) ? v : String(v || '').split(/[,，\s]+/);
+  return [...new Set(arr.map((s) => String(s).trim()).filter(Boolean))];
+}
+
 function sanitizeDept(input, existing) {
   const q = input.quota || {};
   const pick = (f) => (quota.num(q[f]) === null ? 0 : quota.num(q[f]));
@@ -165,6 +172,8 @@ function sanitizeDept(input, existing) {
       concurrency: pick('concurrency'),
     },
     providerIds: Array.isArray(input.providerIds) ? input.providerIds.filter(Boolean) : [],
+    // 允许的模型：空数组 = 不限制；支持通配（gpt-4o*）
+    allowedModels: parseModelList(input.allowedModels),
     status: input.status === 'disabled' ? 'disabled' : 'active',
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -182,6 +191,8 @@ function sanitizeEmployee(input, existing) {
     concurrency: numOrNull(ov.concurrency),
     // 默认 true：个人上限之外仍然占用部门池
     countAgainstDept: ov.countAgainstDept !== false,
+    // 允许的模型特例：null = 继承部门；数组 = 覆盖部门（特例生效时）
+    allowedModels: Array.isArray(ov.allowedModels) ? parseModelList(ov.allowedModels) : null,
     expiresAt: ov.expiresAt ? String(ov.expiresAt) : '',
     note: String(ov.note || '').trim(),
   };
@@ -222,19 +233,31 @@ function overview() {
   const today = store.dayKey();
   const bucket = db.stats.daily[today] || { emp: {}, dept: {} };
 
-  let todayTokens = 0, todayReqs = 0;
-  for (const v of Object.values(bucket.emp || {})) { todayTokens += v.t || 0; todayReqs += v.r || 0; }
+  let todayTokens = 0, todayReqs = 0, todayCost = 0;
+  for (const v of Object.values(bucket.emp || {})) {
+    todayTokens += v.t || 0; todayReqs += v.r || 0; todayCost += v.c || 0;
+  }
+  todayCost = Math.round(todayCost * 1e4) / 1e4;
 
-  let monthTokens = 0, monthReqs = 0;
+  let monthTokens = 0, monthReqs = 0, monthCost = 0;
   for (const [dk, b] of Object.entries(db.stats.daily || {})) {
     if (!dk.startsWith(store.monthKey())) continue;
-    for (const v of Object.values(b.emp || {})) { monthTokens += v.t || 0; monthReqs += v.r || 0; }
+    for (const v of Object.values(b.emp || {})) {
+      monthTokens += v.t || 0; monthReqs += v.r || 0; monthCost += v.c || 0;
+    }
   }
+  monthCost = Math.round(monthCost * 1e4) / 1e4;
+
+  // 今日模型成本排行：哪个模型最烧钱一目了然
+  const modelRank = Object.entries(bucket.models || {})
+    .map(([model, v]) => ({ model, tokens: v.t || 0, reqs: v.r || 0, cost: Math.round((v.c || 0) * 1e4) / 1e4 }))
+    .sort((a, b) => b.cost - a.cost);
 
   const deptRank = db.departments.map((d) => {
     const u = store.getDeptUsage(d.id);
     return {
       id: d.id, name: d.name, dayTokens: u.dayTokens, monthTokens: u.monthTokens,
+      dayCost: u.dayCost, monthCost: u.monthCost,
       dailyLimit: quota.num(d.quota?.dailyTokens) || 0,
       monthlyLimit: quota.num(d.quota?.monthlyTokens) || 0,
       percentDaily: quota.num(d.quota?.dailyTokens) ? Math.min(100, Math.round((u.dayTokens / quota.num(d.quota.dailyTokens)) * 1000) / 10) : 0,
@@ -249,7 +272,7 @@ function overview() {
     const daily = snap.fields.dailyTokens;
     return {
       id: e.id, name: e.name, deptName: dept ? dept.name : '—',
-      dayTokens: u.dayTokens, monthTokens: u.monthTokens,
+      dayTokens: u.dayTokens, monthTokens: u.monthTokens, dayCost: u.dayCost,
       percent: daily.percent, limitText: daily.limitText,
       hasOverride: snap.hasOverride && snap.overrideActive,
       countAgainstDept: snap.countAgainstDept,
@@ -266,8 +289,8 @@ function overview() {
   }
 
   return {
-    today: { tokens: todayTokens, reqs: todayReqs, date: today },
-    month: { tokens: monthTokens, reqs: monthReqs, month: store.monthKey() },
+    today: { tokens: todayTokens, reqs: todayReqs, cost: todayCost, date: today },
+    month: { tokens: monthTokens, reqs: monthReqs, cost: monthCost, month: store.monthKey() },
     counts: {
       departments: db.departments.length,
       employees: db.employees.length,
@@ -278,6 +301,7 @@ function overview() {
     },
     deptRank,
     empRank: empRank.slice(0, 10),
+    modelRank: modelRank.slice(0, 8),
     trend: store.trend7(),
     warnings: warnings.slice(0, 8),
     recent: db.usage.slice(-12).reverse(),
@@ -481,6 +505,26 @@ async function handleApi(req, res, url) {
     });
   }
 
+  // ---------------- 模型单价（成本核算）
+  if (p === '/api/pricing' && method === 'GET') {
+    return json(res, 200, { items: db.pricing });
+  }
+  if (p === '/api/pricing' && method === 'PUT') {
+    const body = await readBody(req, 256 * 1024);
+    const out = {};
+    for (const [model, v] of Object.entries(body.pricing || {})) {
+      const name = String(model || '').trim();
+      if (!name) continue;
+      out[name] = {
+        in: Math.max(0, Number(v.in) || 0),
+        out: Math.max(0, Number(v.out) || 0),
+      };
+    }
+    db.pricing = out;
+    store.save();
+    return json(res, 200, { ok: true });
+  }
+
   // ---------------- 设置
   if (p === '/api/settings' && method === 'GET') {
     const { adminPassHash, secret, ...safe } = db.settings;
@@ -493,8 +537,17 @@ async function handleApi(req, res, url) {
     if (body.onExceed === 'block' || body.onExceed === 'downgrade') db.settings.onExceed = body.onExceed;
     if (body.downgradeModel) db.settings.downgradeModel = String(body.downgradeModel).trim();
     if (typeof body.mockWhenNoProvider === 'boolean') db.settings.mockWhenNoProvider = body.mockWhenNoProvider;
+    if (typeof body.webhookUrl === 'string') db.settings.webhookUrl = body.webhookUrl.trim();
+    if (typeof body.alertsEnabled === 'boolean') db.settings.alertsEnabled = body.alertsEnabled;
     store.save();
     return json(res, 200, { ok: true });
+  }
+  if (p === '/api/settings/test-webhook' && method === 'POST') {
+    const body = await readBody(req, 64 * 1024);
+    const url = String(body.webhookUrl || db.settings.webhookUrl || '').trim();
+    if (!/^https?:\/\//.test(url)) return fail(res, 400, '请先填写机器人 Webhook 地址');
+    const r = await alerts.testWebhook(url);
+    return json(res, 200, r);
   }
   if (p === '/api/settings/password' && method === 'POST') {
     const body = await readBody(req, 64 * 1024);
@@ -631,7 +684,19 @@ async function handleGateway(req, res, url) {
   }
   if (!body.model) return fail(res, 400, '缺少参数 model');
 
-  // —— 3. 配额校验（成本按 prompt 预估，避免剩余额度不足时仍放行）
+  // —— 3. 模型权限校验（部门默认 → 员工特例覆盖，与额度同一套继承规则）
+  const modelPolicy = quota.resolveModels(emp, dept);
+  if (modelPolicy && !quota.modelAllowed(modelPolicy.list, body.model)) {
+    const reason = `没有权限使用模型「${body.model}」（${modelPolicy.source === 'employee' ? '个人' : '部门'}策略限制，允许：${modelPolicy.list.join('、')}）`;
+    store.recordUsage({
+      employeeId: emp.id, deptId: dept ? dept.id : '', model: body.model,
+      totalTokens: 0, status: 'rejected', source: 'api', countDept: true,
+      error: reason,
+    });
+    return fail(res, 403, reason, { code: 'model_not_allowed', type: 'model_not_allowed' });
+  }
+
+  // —— 4. 配额校验（成本按 prompt 预估，避免剩余额度不足时仍放行）
   const estCost = proxy.estimatePrompt(body.messages);
   const check = quota.checkQuota({ employee: emp, dept, cost: estCost });
 
@@ -684,9 +749,9 @@ async function handleGateway(req, res, url) {
     quota.release(emp);
   }
 
-  // —— 5. 记账
+  // —— 5. 记账 + 告警检查
   const u = result.usage || {};
-  store.recordUsage({
+  const rec = store.recordUsage({
     employeeId: emp.id,
     deptId: dept ? dept.id : '',
     providerId: result.providerId || '',
@@ -700,6 +765,9 @@ async function handleGateway(req, res, url) {
     countDept: check.effective.countAgainstDept,
     error: result.error || '',
   });
+  if (rec.status === 'ok') {
+    alerts.check({ employee: emp, dept, effective: check.effective, platformName: db.settings.platformName });
+  }
 
   if (!result.ok && !res.headersSent) {
     fail(res, result.status || 502, result.error || '上游调用失败', { code: 'upstream_error' });

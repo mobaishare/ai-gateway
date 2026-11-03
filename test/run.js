@@ -429,6 +429,76 @@ async function callUntilBlocked(key, maxCalls = 60) {
     });
     check('所有渠道都失败时返回 502', r13.status === 502, `HTTP ${r13.status} ${JSON.stringify(r13.data).slice(0, 160)}`);
 
+    // ================= 模型权限控制 =================
+    const d14 = await mkDept('测试部-模型白名单', { dailyTokens: BIG, monthlyTokens: 0, rpm: 0, concurrency: 0 });
+    // 部门策略：只允许 gpt-4o* 和 deepseek-chat
+    const put14 = await req(`/api/departments/${d14.id}`, {
+      method: 'PUT', token: T,
+      body: { allowedModels: ['gpt-4o*', 'deepseek-chat'] },
+    });
+    check('部门模型白名单可保存', Array.isArray(put14.data.allowedModels) && put14.data.allowedModels.length === 2, JSON.stringify(put14.data.allowedModels));
+
+    const e14 = await mkEmp('测试员-模型继承', d14.id, null);
+    const r14a = await req('/v1/chat/completions', {
+      method: 'POST', token: e14.key,
+      body: { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] },
+    });
+    check('白名单内（通配 gpt-4o*）可调用', r14a.status === 200, `HTTP ${r14a.status}`);
+
+    const r14b = await req('/v1/chat/completions', {
+      method: 'POST', token: e14.key,
+      body: { model: 'claude-3-5-sonnet', messages: [{ role: 'user', content: 'hi' }] },
+    });
+    check('白名单外模型返回 403', r14b.status === 403, `HTTP ${r14b.status}`);
+    check('错误码是 model_not_allowed', r14b.data.error?.code === 'model_not_allowed', r14b.data.error?.code);
+
+    // 员工特例覆盖部门策略
+    const e14b = await mkEmp('测试员-模型特例', d14.id, { enabled: true, allowedModels: ['claude-3-5-sonnet'] });
+    const r14c = await req('/v1/chat/completions', {
+      method: 'POST', token: e14b.key,
+      body: { model: 'claude-3-5-sonnet', messages: [{ role: 'user', content: 'hi' }] },
+    });
+    check('员工特例覆盖部门白名单后可调用', r14c.status === 200, `HTTP ${r14c.status} ${JSON.stringify(r14c.data).slice(0, 120)}`);
+    const snap14 = await req(`/api/employees/${e14b.id}/quota`, { token: T });
+    check('详情展示模型策略来源为员工', snap14.data.models?.source === 'employee', JSON.stringify(snap14.data.models));
+
+    // ================= 成本核算 =================
+    // 上一个用例把正常渠道停用了，先恢复
+    await req(`/api/providers/${pOK.id}`, { method: 'PUT', token: T, body: { status: 'active' } });
+    const pricingPut = await req('/api/pricing', {
+      method: 'PUT', token: T,
+      body: { pricing: { 'fake-model': { in: 10, out: 40 } } },
+    });
+    check('模型单价可保存', pricingPut.status === 200, JSON.stringify(pricingPut.data));
+
+    // 走真实假上游：333 tokens（111 入 + 222 出）→ (111*10 + 222*40)/1e6 = 0.00999
+    const r15 = await req('/v1/chat/completions', {
+      method: 'POST', token: e11.key,
+      body: { model: 'fake-model', messages: [{ role: 'user', content: '成本核算' }] },
+    });
+    check('定价模型可正常调用', r15.status === 200, `HTTP ${r15.status}`);
+    const log15 = await req('/api/logs?employeeId=' + e11.id + '&limit=1', { token: T });
+    const cost15 = log15.data.items[0]?.cost;
+    check('日志记录了成本', Math.abs(cost15 - 0.00999) < 1e-9, String(cost15));
+
+    const ov15 = await req('/api/overview', { token: T });
+    check('概览带今日成本字段', typeof ov15.data.today?.cost === 'number', String(ov15.data.today?.cost));
+    check('概览今日成本大于 0', ov15.data.today.cost > 0, String(ov15.data.today.cost));
+    check('模型成本排行包含 fake-model', (ov15.data.modelRank || []).some((m) => m.model === 'fake-model'), JSON.stringify((ov15.data.modelRank || []).map((m) => m.model)));
+    check('趋势数据带成本', typeof ov15.data.trend?.[6]?.cost === 'number', JSON.stringify(ov15.data.trend?.[6]));
+
+    // ================= 用量告警（无 webhook 时安全降级） =================
+    const testHook = await req('/api/settings/test-webhook', {
+      method: 'POST', token: T,
+      body: { webhookUrl: '' },
+    });
+    check('未配置 webhook 时测试返回 400', testHook.status === 400, `HTTP ${testHook.status}`);
+    const badHook = await req('/api/settings/test-webhook', {
+      method: 'POST', token: T,
+      body: { webhookUrl: 'http://127.0.0.1:1/hook' },
+    });
+    check('不可达 webhook 返回 ok:false', badHook.status === 200 && badHook.data.ok === false, JSON.stringify(badHook.data));
+
   } catch (e) {
     fail++;
     failures.push('测试执行异常：' + e.message);

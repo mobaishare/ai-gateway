@@ -94,6 +94,14 @@ function barWidth(percent, unlimited) {
   return Math.max(2, Math.min(100, percent));
 }
 
+/** 成本展示：¥ + 最多 4 位小数 */
+function costText(c) {
+  const v = Number(c) || 0;
+  if (v === 0) return '¥0';
+  const s = v.toFixed(Math.abs(v) < 100 ? 4 : 2).replace(/0+$/, '').replace(/\.$/, '');
+  return '¥' + s;
+}
+
 // ---------------------------------------------------------------- 请求封装
 
 async function api(path, opts = {}) {
@@ -252,12 +260,12 @@ function renderDashboard() {
       <div class="kpi">
         <div class="kpi-label">今日 Token</div>
         <div class="kpi-value">${shortNum(o.today.tokens)}<small>tokens</small></div>
-        <div class="kpi-foot">今日请求 ${fmt(o.today.reqs)} 次</div>
+        <div class="kpi-foot">今日请求 ${fmt(o.today.reqs)} 次 · ${costText(o.today.cost)}</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">本月 Token</div>
         <div class="kpi-value">${shortNum(o.month.tokens)}<small>tokens</small></div>
-        <div class="kpi-foot">${o.month.month} · 共 ${fmt(o.month.reqs)} 次请求</div>
+        <div class="kpi-foot">${o.month.month} · ${fmt(o.month.reqs)} 次 · ${costText(o.month.cost)}</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">员工与特例</div>
@@ -310,7 +318,7 @@ function renderDashboard() {
             <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">
               <span style="font-weight:550;font-size:13px">${esc(d.name)}</span>
               <span style="font-size:12px;color:var(--muted)" class="num">
-                ${shortNum(d.dayTokens)} / ${d.dailyLimit ? shortNum(d.dailyLimit) : '不限'}${d.dailyLimit && d.percentDaily > 0 ? ` · ${d.percentDaily}%` : ''}
+                ${shortNum(d.dayTokens)} / ${d.dailyLimit ? shortNum(d.dailyLimit) : '不限'}${d.dailyLimit && d.percentDaily > 0 ? ` · ${d.percentDaily}%` : ''}${d.dayCost ? ` · ${costText(d.dayCost)}` : ''}
               </span>
             </div>
             <div class="bar"><i class="${barClass(d.percentDaily)}" style="width:${d.dailyLimit ? barWidth(d.percentDaily) : 0}%"></i></div>
@@ -340,7 +348,7 @@ function renderDashboard() {
       <div class="card-body tight table-wrap">
         <table class="tbl">
           <thead><tr>
-            <th>员工</th><th>部门</th><th>生效额度</th><th style="width:200px">今日进度</th><th>今日 Token</th><th>月度 Token</th>
+            <th>员工</th><th>部门</th><th>生效额度</th><th style="width:200px">今日进度</th><th>今日 Token</th><th>今日成本</th><th>月度 Token</th>
           </tr></thead>
           <tbody>
             ${o.empRank.length ? o.empRank.map((e) => `
@@ -356,15 +364,42 @@ function renderDashboard() {
                   <div class="cell-sub num">${e.percent}%</div>
                 </td>
                 <td class="num nowrap">${fmt(e.dayTokens)}</td>
+                <td class="num nowrap">${costText(e.dayCost)}</td>
                 <td class="num nowrap">${fmt(e.monthTokens)}</td>
-              </tr>`).join('') : '<tr><td colspan="6" class="empty">还没有员工</td></tr>'}
+              </tr>`).join('') : '<tr><td colspan="7" class="empty">还没有员工</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  const modelCostTable = `
+    <div class="card" style="margin-top:16px">
+      <div class="card-head">
+        <div><h3>今日模型成本</h3><div class="sub">按模型汇总 · 单价在「上游渠道」页配置</div></div>
+        <button class="btn btn-ghost btn-sm" data-act="goto" data-key="providers">配置单价</button>
+      </div>
+      <div class="card-body tight table-wrap">
+        <table class="tbl">
+          <thead><tr><th>模型</th><th>请求数</th><th>Token</th><th>成本</th><th style="width:130px">成本占比</th></tr></thead>
+          <tbody>
+            ${o.modelRank && o.modelRank.length ? (() => {
+              const maxC = Math.max(0.0000001, ...o.modelRank.map((m) => m.cost));
+              return o.modelRank.map((m) => `
+              <tr>
+                <td><span class="tag tag-grey">${esc(m.model)}</span></td>
+                <td class="num nowrap">${fmt(m.reqs)}</td>
+                <td class="num nowrap">${fmt(m.tokens)}</td>
+                <td class="num nowrap"><b>${costText(m.cost)}</b></td>
+                <td><div class="bar"><i style="width:${barWidth(Math.round((m.cost / maxC) * 100))}%"></i></div></td>
+              </tr>`).join('');
+            })() : '<tr><td colspan="5" class="empty">今天还没有成功调用</td></tr>'}
           </tbody>
         </table>
       </div>
     </div>`;
 
   $('#view').innerHTML = kpis + warnings +
-    `<div class="grid-2">${trend}${deptRank}</div>` + empTable;
+    `<div class="grid-2">${trend}${deptRank}</div>` + empTable + modelCostTable;
 }
 
 // ---------------------------------------------------------------- 部门页
@@ -525,6 +560,7 @@ function renderEmployees() {
 async function renderProviders() {
   const d = await api('/api/providers');
   state.providers = d.items;
+  const pricing = (await api('/api/pricing')).items || {};
 
   const cards = d.items.map((p) => `
     <div class="provider-card ${p.status === 'active' ? '' : 'disabled'}">
@@ -565,7 +601,40 @@ async function renderProviders() {
       <button class="btn btn-primary btn-sm" data-act="new-provider">${ICON.plus} 新增渠道</button>
     </div>
     ${d.items.length ? `<div class="provider-grid">${cards}</div>`
-      : `<div class="card"><div class="empty"><strong>还没有配置上游渠道</strong>新增一个 OpenAI 兼容的渠道，填入 Base URL 和 Key 就能用了</div></div>`}`;
+      : `<div class="card"><div class="empty"><strong>还没有配置上游渠道</strong>新增一个 OpenAI 兼容的渠道，填入 Base URL 和 Key 就能用了</div></div>`}
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head">
+        <div>
+          <h3>模型单价</h3>
+          <div class="sub">元 / 百万 Tokens · 用于成本核算，与转发无关；未定价的模型成本按 0 计</div>
+        </div>
+        <button class="btn btn-primary btn-sm" data-act="save-pricing">保存单价</button>
+      </div>
+      <div class="card-body tight table-wrap">
+        <table class="tbl">
+          <thead><tr><th>模型</th><th style="width:170px">输入单价（¥/百万）</th><th style="width:170px">输出单价（¥/百万）</th></tr></thead>
+          <tbody>
+            ${(() => {
+              const models = [...new Set([...d.items.flatMap((p) => p.models || []).filter((m) => m !== '*'), ...Object.keys(pricing)])];
+              const rows = models.map((m, i) => `
+                <tr>
+                  <td><span class="tag tag-grey">${esc(m)}</span></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm pr-in" data-model="${esc(m)}" value="${pricing[m]?.in ?? ''}" placeholder="未定价" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm pr-out" data-model="${esc(m)}" value="${pricing[m]?.out ?? ''}" placeholder="未定价" /></td>
+                </tr>`).join('');
+              return rows + `
+                <tr>
+                  <td><input type="text" class="input-sm" id="pr-new-model" placeholder="新模型名，如 claude-4-sonnet" style="width:100%" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-in" placeholder="输入单价" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-out" placeholder="输出单价" /></td>
+                </tr>`;
+            })()}
+          </tbody>
+        </table>
+        <p class="field-hint" style="margin-top:10px">参考价：gpt-4o 约 ¥18 / ¥72（输入 / 输出），gpt-4o-mini 约 ¥1.1 / ¥4.3，deepseek-chat 约 ¥2 / ¥8。价格随官方调整，以账单为准。</p>
+      </div>
+    </div>`;
 }
 
 // ---------------------------------------------------------------- 日志页
@@ -585,6 +654,7 @@ async function renderLogs() {
       <td><span class="tag tag-grey">${esc(x.model)}</span></td>
       <td class="nowrap">${esc(x.providerName)}</td>
       <td class="num nowrap">${fmt(x.totalTokens)}</td>
+      <td class="num nowrap">${x.cost ? `<b>${costText(x.cost)}</b>` : '<span style="color:var(--muted)">—</span>'}</td>
       <td class="num nowrap" style="color:var(--muted)">${x.latencyMs} ms</td>
       <td class="nowrap">
         <span class="tag ${x.status === 'ok' ? 'tag-ok' : (x.status === 'rejected' ? 'tag-warn' : 'tag-danger')}">
@@ -610,9 +680,9 @@ async function renderLogs() {
       <div class="card-body tight table-wrap">
         <table class="tbl">
           <thead><tr>
-            <th>时间</th><th>员工</th><th>模型</th><th>渠道</th><th>Token</th><th>耗时</th><th>状态</th>
+            <th>时间</th><th>员工</th><th>模型</th><th>渠道</th><th>Token</th><th>成本</th><th>耗时</th><th>状态</th>
           </tr></thead>
-          <tbody>${rows || '<tr><td colspan="7" class="empty"><strong>还没有调用记录</strong>用「接入文档」里的示例发一个请求试试</td></tr>'}</tbody>
+          <tbody>${rows || '<tr><td colspan="8" class="empty"><strong>还没有调用记录</strong>用「接入文档」里的示例发一个请求试试</td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
@@ -906,6 +976,28 @@ function renderSettings() {
 
     <div class="grid-2" style="margin-top:16px">
       <div class="card">
+        <div class="card-head"><div><h3>用量告警</h3><div class="sub">额度跨过 80% / 100% 时推送群机器人</div></div></div>
+        <div class="card-body">
+          <label class="field">
+            <span>机器人 Webhook 地址</span>
+            <input type="text" id="set-webhook" value="${esc(s.webhookUrl || '')}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/… 或 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…" />
+            <span class="field-hint">支持飞书自定义机器人和企业微信群机器人，按地址自动识别格式。每个阈值每天最多提醒一次，不会刷屏。</span>
+          </label>
+          <div style="margin:4px 0 14px">
+            <label class="switch">
+              <input type="checkbox" id="set-alerts" ${s.alertsEnabled !== false ? 'checked' : ''} />
+              <span class="switch-track"></span>
+              <span class="switch-label">启用用量告警</span>
+            </label>
+          </div>
+          <div style="display:flex;gap:10px">
+            <button class="btn btn-primary btn-sm" data-act="save-settings">保存设置</button>
+            <button class="btn btn-ghost btn-sm" data-act="test-webhook">发送测试消息</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-head"><div><h3>数据管理</h3><div class="sub">清空部门、员工、日志与统计</div></div></div>
         <div class="card-body">
           <p class="field-hint" style="margin-top:0;font-size:13px">
@@ -915,16 +1007,16 @@ function renderSettings() {
           <button class="btn btn-danger-ghost btn-sm" data-act="reset-data">清空业务数据（保留上游渠道）</button>
         </div>
       </div>
+    </div>
 
-      <div class="card">
-        <div class="card-head"><div><h3>数据备份</h3><div class="sub">导出配置（不含真实密钥与密码）</div></div></div>
-        <div class="card-body">
-          <p class="field-hint" style="margin-top:0;font-size:13px">
-            所有数据保存在 <code style="font-family:var(--mono)">data/db.json</code>，直接复制该文件即可完成备份。
-            下面是脱敏后的配置导出，适合排查问题或迁移结构。
-          </p>
-          <button class="btn btn-ghost btn-sm" data-act="export">下载脱敏配置</button>
-        </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><div><h3>数据备份</h3><div class="sub">导出配置（不含真实密钥与密码）</div></div></div>
+      <div class="card-body">
+        <p class="field-hint" style="margin-top:0;font-size:13px">
+          所有数据保存在 <code style="font-family:var(--mono)">data/db.json</code>，直接复制该文件即可完成备份。
+          下面是脱敏后的配置导出，适合排查问题或迁移结构。
+        </p>
+        <button class="btn btn-ghost btn-sm" data-act="export">下载脱敏配置</button>
       </div>
     </div>`;
 }
@@ -994,6 +1086,13 @@ function deptForm(dept) {
         </label>
       </div>
 
+      <div class="section-label">允许的模型（可选）</div>
+      <label class="field">
+        <span>模型白名单</span>
+        <input type="text" id="f-models" value="${esc((d.allowedModels || []).join(', '))}" placeholder="留空 = 不限制，可使用全部模型" />
+        <span class="field-hint">用逗号分隔，支持通配，如 gpt-4o-mini, deepseek*。填了之后该部门只能调用列表里的模型。</span>
+      </label>
+
       <div class="section-label">渠道绑定（可选）</div>
       <p class="field-hint" style="margin-top:0">不选则使用全部启用的渠道；选了以后该部门的流量只在选中的渠道里分流。</p>
       <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px">
@@ -1024,7 +1123,7 @@ function empForm(emp) {
   const isNew = !emp;
   const e = emp || {
     name: '', email: '', deptId: state.depts[0]?.id || '', status: 'active',
-    override: { enabled: false, dailyTokens: null, monthlyTokens: null, rpm: null, concurrency: null, countAgainstDept: true, expiresAt: '', note: '' },
+    override: { enabled: false, dailyTokens: null, monthlyTokens: null, rpm: null, concurrency: null, countAgainstDept: true, allowedModels: null, expiresAt: '', note: '' },
   };
   const ov = e.override || {};
 
@@ -1120,6 +1219,12 @@ function empForm(emp) {
               <input type="text" id="e-ov-note" value="${esc(ov.note || '')}" placeholder="为什么给他开特例" />
             </label>
           </div>
+
+          <label class="field">
+            <span>允许的模型（留空 = 继承部门策略）</span>
+            <input type="text" class="ov-in" id="e-ov-models" value="${esc((ov.allowedModels || []).join(', '))}" placeholder="继承部门" />
+            <span class="field-hint">填了就<b>整体覆盖</b>部门的模型白名单，同样支持通配（如 gpt-4o*）。部门没设且这里也没填 = 不限制。</span>
+          </label>
         </div>
 
         <div id="ov-preview"></div>
@@ -1142,6 +1247,7 @@ function empForm(emp) {
       rpm: $('#e-ov-rpm').value,
       concurrency: $('#e-ov-conc').value,
       countAgainstDept: $('#e-ov-count').checked,
+      allowedModels: $('#e-ov-models').value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
     } : null;
 
     $('#ov-fields').classList.toggle('hidden', !enabled);
@@ -1153,9 +1259,19 @@ function empForm(emp) {
     const short = { dailyTokens: '日', monthlyTokens: '月', rpm: 'RPM', concurrency: '并发' };
     const bits = rows.map((r) =>
       `${short[r.key]} <b class="${r.source === 'employee' ? 'emp' : ''}">${r.valueText}</b>`).join(' · ');
+
+    // 模型策略摘要
+    let modelText;
+    if (enabled && ovNow && ovNow.allowedModels.length) {
+      modelText = `模型 <b class="emp">${esc(ovNow.allowedModels.join('、'))}</b>`;
+    } else if (dept && (dept.allowedModels || []).length) {
+      modelText = `模型 <b>${esc(dept.allowedModels.join('、'))}</b>（部门）`;
+    } else {
+      modelText = '模型 <b>不限</b>';
+    }
     $('#ov-summary').innerHTML = `
       <div style="font-size:12.5px;line-height:1.7">
-        生效额度：${bits}
+        生效额度：${bits} · ${modelText}
         ${enabled && ovNow && ovNow.countAgainstDept === false
           ? '<span class="tag tag-brand" style="margin-left:6px">不占部门池</span>'
           : '<span class="tag tag-grey" style="margin-left:6px">计入部门池</span>'}
@@ -1184,7 +1300,7 @@ function empForm(emp) {
 
   $('#e-ov-enabled').addEventListener('change', refreshPreview);
   $('#e-dept').addEventListener('change', refreshPreview);
-  ['#e-ov-daily', '#e-ov-monthly', '#e-ov-rpm', '#e-ov-conc', '#e-ov-count'].forEach((sel) => {
+  ['#e-ov-daily', '#e-ov-monthly', '#e-ov-rpm', '#e-ov-conc', '#e-ov-count', '#e-ov-models'].forEach((sel) => {
     const el = $(sel);
     if (el) el.addEventListener('input', refreshPreview);
     if (el) el.addEventListener('change', refreshPreview);
@@ -1295,6 +1411,13 @@ async function empDetail(id) {
           ${fieldRow('concurrency')}
         </tbody>
       </table>
+
+      ${snap.models && snap.models.restricted ? `
+        <div class="section-label">允许的模型</div>
+        <div class="explain" style="margin-top:0">
+          <span class="tag ${snap.models.source === 'employee' ? 'tag-brand' : 'tag-grey'}" style="margin-right:8px">${snap.models.source === 'employee' ? '个人特例' : '部门策略'}</span>
+          ${snap.models.list.map((m) => `<span class="tag tag-outline" style="margin:2px 4px 2px 0">${esc(m)}</span>`).join('')}
+        </div>` : ''}
 
       ${snap.deptPool ? `
         <div class="section-label">部门池（${esc(snap.deptPool.name)}）</div>
@@ -1450,6 +1573,7 @@ document.addEventListener('click', async (ev) => {
             concurrency: $('#f-conc').value || 0,
           },
           providerIds: $$('.f-prov').filter((c) => c.checked).map((c) => c.value),
+          allowedModels: $('#f-models').value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
           status: $('#f-status').checked ? 'active' : 'disabled',
         };
         if (!payload.name) { toast('请填写部门名称', 'err'); return; }
@@ -1502,6 +1626,9 @@ document.addEventListener('click', async (ev) => {
             rpm: ovEnabled ? val('#e-ov-rpm') : null,
             concurrency: ovEnabled ? val('#e-ov-conc') : null,
             countAgainstDept: ovEnabled ? $('#e-ov-count').checked : true,
+            allowedModels: ovEnabled
+              ? ($('#e-ov-models').value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)) || null
+              : null,
             expiresAt: ovEnabled ? ($('#e-ov-expire').value || '') : '',
             note: ovEnabled ? ($('#e-ov-note').value || '') : '',
           },
@@ -1589,6 +1716,23 @@ document.addEventListener('click', async (ev) => {
         break;
       }
 
+      case 'save-pricing': {
+        const inMap = new Map($$('.pr-in').map((el) => [el.dataset.model, el.value]));
+        const outMap = new Map($$('.pr-out').map((el) => [el.dataset.model, el.value]));
+        const pricing = {};
+        for (const [m, vin] of inMap) {
+          pricing[m] = { in: Number(vin) || 0, out: Number(outMap.get(m) || 0) };
+        }
+        const nm = $('#pr-new-model').value.trim();
+        if (nm) {
+          pricing[nm] = { in: Number($('#pr-new-in').value) || 0, out: Number($('#pr-new-out').value) || 0 };
+        }
+        await api('/api/pricing', { method: 'PUT', body: JSON.stringify({ pricing }) });
+        await renderProviders();
+        toast('单价已保存，之后的调用将按新价格核算成本', 'ok');
+        break;
+      }
+
       case 'save-settings': {
         await api('/api/settings', {
           method: 'PUT',
@@ -1596,10 +1740,28 @@ document.addEventListener('click', async (ev) => {
             platformName: $('#set-name').value.trim(),
             onExceed: $('#set-onExceed').value,
             mockWhenNoProvider: $('#set-mock').checked,
+            webhookUrl: $('#set-webhook').value.trim(),
+            alertsEnabled: $('#set-alerts').checked,
           }),
         });
         await refreshAll();
         toast('设置已保存', 'ok');
+        break;
+      }
+
+      case 'test-webhook': {
+        el.disabled = true;
+        el.textContent = '发送中…';
+        try {
+          const r = await api('/api/settings/test-webhook', {
+            method: 'POST',
+            body: JSON.stringify({ webhookUrl: $('#set-webhook').value.trim() }),
+          });
+          toast(r.ok ? '测试消息已发送，去群里看看' : `发送失败：${r.message}`, r.ok ? 'ok' : 'err');
+        } finally {
+          el.disabled = false;
+          el.textContent = '发送测试消息';
+        }
         break;
       }
 
