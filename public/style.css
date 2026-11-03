@@ -1014,4 +1014,20 @@ pre.code .k { color: #8ab4ff; }
 }
 
 /* 模型单价表：数字输入收窄，避免 7 列横向溢出 */
-.price-tbl .input-sm { min-width: 0; width: 100%; padding-left: 8px; padding-right: 6px; }
+.price-tbl th, .price-tbl td { padding-left: 6px; padding-right: 6px; }
+.price-tbl .input-sm { text-align: right; }
+.price-tbl .input-sm { min-width: 0; width: 100%; padding-left: 5px; padding-right: 4px; }
+/* 双行分组表头：峰时 / 空闲时段 */
+.price-tbl thead th { padding-top: 8px; padding-bottom: 8px; text-align: center; }
+.price-tbl thead th.th-model { text-align: left; vertical-align: middle; }
+.price-tbl thead th.th-group {
+  font-size: 11px;
+  letter-spacing: .5px;
+  border-bottom: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+.price-tbl thead th.th-group-idle { background: #eef4ff; color: #1d4ed8; }
+.price-tbl thead tr:nth-child(2) th { font-size: 11px; font-weight: 500; text-transform: none; letter-spacing: 0; }
+.price-tbl thead tr:nth-child(2) th:nth-child(1) { border-left: 1px solid var(--line); }
+.price-tbl td:nth-child(6) { border-left: 1px solid var(--line); }
+.price-tbl .price-new-row td { background: #fafbfc; }

@@ -581,6 +581,25 @@ async function callUntilBlocked(key, maxCalls = 60) {
     check('单价接口返回实时时段状态与空闲/分档配置', typeof prGet.data.nowPeak === 'boolean' && typeof prGet.data.nowIdle === 'boolean' && prGet.data.hasIdlePricing === true, JSON.stringify({ nowPeak: prGet.data.nowPeak, nowIdle: prGet.data.nowIdle, hasIdlePricing: prGet.data.hasIdlePricing }));
     check('单价接口带出缓存与分档字段', prGet.data.items['fake-model']?.cacheWrite === 4 && Array.isArray(prGet.data.items['fake-model']?.tiers) && prGet.data.items['fake-model']?.tiers?.[0]?.upTo === 100, JSON.stringify(prGet.data.items['fake-model']));
 
+    // 7) 空闲时段单独配置缓存命中/写入价（DeepSeek 空闲缓存价远低于峰时价）
+    const IDLE_CACHE_PRICING = { in: 2, out: 8, cacheIn: 0.04, cacheWrite: 0.1, idle: { in: 1, out: 4, cacheIn: 0.02, cacheWrite: 0.05 } };
+    await req('/api/pricing', { method: 'PUT', token: T, body: { pricing: { 'fake-model': IDLE_CACHE_PRICING } } });
+    const prIdle = await req('/api/pricing', { token: T });
+    const eIdle = prIdle.data.items['fake-model'] || {};
+    check('空闲时段的缓存命中/写入价可保存并回显',
+      eIdle.idle?.cacheIn === 0.02 && eIdle.idle?.cacheWrite === 0.05 && eIdle.idle?.in === 1 && eIdle.idle?.out === 4,
+      JSON.stringify(eIdle.idle));
+    await req('/api/settings', { method: 'PUT', token: T, body: { peak: { ...peakWin, holidays: [bjDate] } } });
+    const r21 = await req('/v1/chat/completions', {
+      method: 'POST', token: e11.key,
+      body: { model: 'fake-model', messages: [{ role: 'user', content: '空闲缓存价核算' }] },
+    });
+    check('空闲时段请求可正常调用', r21.status === 200, `HTTP ${r21.status}`);
+    const log21 = await req('/api/logs?employeeId=' + e11.id + '&limit=1', { token: T });
+    const exp21 = ((111 - 5 - 6) * 1 + 5 * 0.02 + 6 * 0.05 + 222 * 4) / 1e6; // 100*空闲输入 + 5*空闲缓存命中 + 6*空闲缓存写入 + 222*空闲输出
+    check('空闲时段按空闲缓存命中/写入价核算', Math.abs(log21.data.items[0]?.cost - exp21) < 1e-9,
+      `cost=${log21.data.items[0]?.cost} 期望=${exp21}`);
+
     // 收尾：关闭分时，避免影响其他用例
     await req('/api/settings', { method: 'PUT', token: T, body: { peak: { ...peakWin, enabled: false } } });
 

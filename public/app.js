@@ -639,45 +639,59 @@ async function renderProviders() {
         </div>
         <div class="table-wrap">
         <table class="tbl price-tbl">
-          <thead><tr>
-            <th style="width:170px">模型</th>
-            <th style="width:92px">输入（¥/百万）</th>
-            <th style="width:92px">输出（¥/百万）</th>
-            <th style="width:88px">缓存命中</th>
-            <th style="width:88px">缓存写入</th>
-            <th style="width:88px">空闲输入</th>
-            <th style="width:88px">空闲输出</th>
-          </tr></thead>
+          <thead>
+            <tr>
+              <th rowspan="2" class="th-model" style="width:146px">模型</th>
+              <th colspan="4" class="th-group">峰时（默认）</th>
+              <th colspan="4" class="th-group th-group-idle">空闲时段</th>
+            </tr>
+            <tr>
+              <th style="width:78px">输入</th>
+              <th style="width:78px">输出</th>
+              <th style="width:84px">缓存命中</th>
+              <th style="width:84px">缓存写入</th>
+              <th style="width:78px">输入</th>
+              <th style="width:78px">输出</th>
+              <th style="width:84px">缓存命中</th>
+              <th style="width:84px">缓存写入</th>
+            </tr>
+          </thead>
           <tbody>
             ${(() => {
               const models = [...new Set([...d.items.flatMap((p) => p.models || []).filter((m) => m !== '*'), ...Object.keys(pricing)])];
+              const numCell = (cls, m, val, ph, tip) => `<td><input type="number" step="0.01" min="0" class="input-sm ${cls}" data-model="${esc(m)}" value="${val ?? ''}" placeholder="${ph}" title="${tip || ph}" /></td>`;
               const rows = models.map((m) => `
                 <tr>
                   <td><span class="tag tag-grey">${esc(m)}</span></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm pr-in" data-model="${esc(m)}" value="${pricing[m]?.in ?? ''}" placeholder="未定价" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm pr-out" data-model="${esc(m)}" value="${pricing[m]?.out ?? ''}" placeholder="未定价" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm pr-cachein" data-model="${esc(m)}" value="${pricing[m]?.cacheIn ?? ''}" placeholder="同输入价" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm pr-cachewrite" data-model="${esc(m)}" value="${pricing[m]?.cacheWrite ?? ''}" placeholder="同输入价" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm pr-idlein" data-model="${esc(m)}" value="${pricing[m]?.idle?.in ?? ''}" placeholder="不分时" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm pr-idleout" data-model="${esc(m)}" value="${pricing[m]?.idle?.out ?? ''}" placeholder="不分时" /></td>
+                  ${numCell('pr-in', m, pricing[m]?.in, '未定价', '峰时输入单价（元/百万 tokens）')}
+                  ${numCell('pr-out', m, pricing[m]?.out, '未定价', '峰时输出单价（元/百万 tokens）')}
+                  ${numCell('pr-cachein', m, pricing[m]?.cacheIn, '同输入', '峰时缓存命中输入价，留空按峰时输入价')}
+                  ${numCell('pr-cachewrite', m, pricing[m]?.cacheWrite, '同输入', '峰时缓存写入输入价，留空按峰时输入价')}
+                  ${numCell('pr-idlein', m, pricing[m]?.idle?.in, '不分时', '空闲时段输入单价，留空表示该模型不分时')}
+                  ${numCell('pr-idleout', m, pricing[m]?.idle?.out, '不分时', '空闲时段输出单价，留空沿用峰时输出价')}
+                  ${numCell('pr-idlecachein', m, pricing[m]?.idle?.cacheIn, '同闲入', '空闲时段缓存命中输入价，留空按空闲输入价')}
+                  ${numCell('pr-idlecachewrite', m, pricing[m]?.idle?.cacheWrite, '同闲入', '空闲时段缓存写入输入价，留空按空闲输入价')}
                 </tr>`).join('');
               return rows + `
-                <tr>
+                <tr class="price-new-row">
                   <td><input type="text" class="input-sm" id="pr-new-model" placeholder="新模型名，如 deepseek-flash" style="width:100%" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-in" placeholder="输入单价" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-out" placeholder="输出单价" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-in" placeholder="输入" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-out" placeholder="输出" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-cachein" placeholder="可选" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-cachewrite" placeholder="可选" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-idlein" placeholder="可选" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-idleout" placeholder="可选" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-idlecachein" placeholder="可选" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-idlecachewrite" placeholder="可选" /></td>
                 </tr>`;
             })()}
           </tbody>
         </table>
         </div>
         <p class="field-hint" style="margin-top:10px">
-          高峰时段规则（北京时间 UTC+8）：命中「高峰日 + 高峰时段」按输入/输出价计，其余（含节假日全天）按「空闲输入/空闲输出」计——贴合 DeepSeek 官方（工作日 9:00–12:00、14:00–18:00 为高峰）。
-          缓存命中/写入：上游 usage 里的缓存 tokens（DeepSeek prompt_cache_hit_tokens、OpenAI cached_tokens、Anthropic cache_creation_input_tokens）自动按对应价核算，留空按输入价。各列留空都有合理回落，价格随官方调整，以账单为准。
+          高峰时段规则（北京时间 UTC+8）：命中「高峰日 + 高峰时段」按左侧「峰时」四列计，其余（含周末、节假日全天）按右侧「空闲时段」四列计——贴合 DeepSeek 官方（工作日 9:00–12:00、14:00–18:00 为高峰，其余为空闲）。
+          缓存命中/写入：上游 usage 里的缓存 tokens（DeepSeek <code>prompt_cache_hit_tokens</code>、OpenAI <code>cached_tokens</code>、Anthropic <code>cache_creation_input_tokens</code>）自动按对应价核算。
+          留空回落：空闲时段未填「空闲缓存命中/写入」时按「空闲输入」计，未填「空闲输入」时沿用峰时输入；峰时未填缓存价时按峰时输入计。价格随官方调整，以账单为准。
         </p>
       </div>
     </div>
@@ -1791,8 +1805,10 @@ document.addEventListener('click', async (ev) => {
           setOrDel(entry, 'cacheIn', num(els.cacheIn));
           setOrDel(entry, 'cacheWrite', num(els.cacheWrite));
           const idle = { ...(entry.idle || {}) };
-          if (els.idleIn !== undefined) setOrDel(idle, 'in', num(els.idleIn));
-          if (els.idleOut !== undefined) setOrDel(idle, 'out', num(els.idleOut));
+          setOrDel(idle, 'in', num(els.idleIn));
+          setOrDel(idle, 'out', num(els.idleOut));
+          setOrDel(idle, 'cacheIn', num(els.idleCacheIn));
+          setOrDel(idle, 'cacheWrite', num(els.idleCacheWrite));
           if (Object.keys(idle).length) entry.idle = idle; else delete entry.idle;
           base[m] = entry;
         };
@@ -1805,6 +1821,8 @@ document.addEventListener('click', async (ev) => {
             cacheWrite: $$('.pr-cachewrite').find((x) => x.dataset.model === m)?.value ?? '',
             idleIn: $$('.pr-idlein').find((x) => x.dataset.model === m)?.value ?? '',
             idleOut: $$('.pr-idleout').find((x) => x.dataset.model === m)?.value ?? '',
+            idleCacheIn: $$('.pr-idlecachein').find((x) => x.dataset.model === m)?.value ?? '',
+            idleCacheWrite: $$('.pr-idlecachewrite').find((x) => x.dataset.model === m)?.value ?? '',
           });
         }
         const nm = $('#pr-new-model').value.trim();
@@ -1816,6 +1834,8 @@ document.addEventListener('click', async (ev) => {
             cacheWrite: $('#pr-new-cachewrite').value,
             idleIn: $('#pr-new-idlein').value,
             idleOut: $('#pr-new-idleout').value,
+            idleCacheIn: $('#pr-new-idlecachein').value,
+            idleCacheWrite: $('#pr-new-idlecachewrite').value,
           });
         }
         await api('/api/pricing', { method: 'PUT', body: JSON.stringify({ pricing: base }) });
