@@ -845,6 +845,17 @@ async function handleApi(req, res, url) {
     }
     // 流式是否自动补 include_usage（关掉后流式请求只能按文本估算 token）
     if (typeof body.streamUsage === 'boolean') db.settings.streamUsage = body.streamUsage;
+    // 上游繁忙/限流自动重试
+    if (body.retry && typeof body.retry === 'object') {
+      const r = db.settings.retry || (db.settings.retry = {});
+      if (typeof body.retry.enabled === 'boolean') r.enabled = body.retry.enabled;
+      if (body.retry.times !== undefined && body.retry.times !== null && body.retry.times !== '') {
+        r.times = Math.min(5, Math.max(0, Math.round(Number(body.retry.times) || 0)));
+      }
+      if (body.retry.baseMs !== undefined && body.retry.baseMs !== null && body.retry.baseMs !== '') {
+        r.baseMs = Math.min(5000, Math.max(100, Math.round(Number(body.retry.baseMs) || 800)));
+      }
+    }
     // 高峰时段规则（北京时间）：工作日 + 多时间窗 + 法定节假日排除
     if (body.peak && typeof body.peak === 'object') {
       const w = db.settings.peak || (db.settings.peak = {});
@@ -1063,6 +1074,8 @@ async function handleGateway(req, res, url) {
         timeoutMs: db.settings.requestTimeoutMs || 120000,
         // 流式默认补 include_usage，拿到上游真实 usage；管理员可在设置里关掉
         forceStreamUsage: db.settings.streamUsage !== false,
+        // 上游 5xx / 429 / 连接抖动时退避重试
+        retry: db.settings.retry,
       });
     } else if (db.settings.mockWhenNoProvider) {
       const m = await proxy.mockReply({ res, body });

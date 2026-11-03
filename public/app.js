@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------- 基础工具
 
 // 与 package.json 的 version 保持一致（scripts/check-docs.js 会校验）
-const APP_VERSION = '1.6.4';
+const APP_VERSION = '1.6.5';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -1308,6 +1308,29 @@ async function renderSettings() {
               开启后网关会在流式请求里补 <code>stream_options.include_usage</code>，拿到厂商返回的真实 token 数；
               关掉则上游多半不返回用量，只能按文本估算，和厂商账单会有偏差。个别不认这个参数的代理会自动退回原始请求重试。
             </span>
+          </div>
+          <div style="margin:4px 0 14px">
+            <label class="switch">
+              <input type="checkbox" id="set-retry-on" ${(s.retry && s.retry.enabled === false) ? '' : 'checked'} />
+              <span class="switch-track"></span>
+              <span class="switch-label">上游繁忙 / 限流时自动重试</span>
+            </label>
+            <span class="field-hint">
+              上游返回 503「Service is too busy」、429 限流或连接中断时，先在同一渠道退避重试几次，都失败再切下一个渠道。
+              只配了一个渠道时，这是它能自动恢复的唯一手段。4xx（参数错误、鉴权失败）不重试。
+            </span>
+          </div>
+          <div class="field-row">
+            <label class="field">
+              <span>重试次数（额外）</span>
+              <input type="number" id="set-retry-times" min="0" max="5" value="${(s.retry && s.retry.times != null) ? s.retry.times : 2}" />
+              <span class="field-hint">填 0 等于关闭。</span>
+            </label>
+            <label class="field">
+              <span>首次退避（毫秒）</span>
+              <input type="number" id="set-retry-base" min="100" max="5000" step="100" value="${(s.retry && s.retry.baseMs) || 800}" />
+              <span class="field-hint">之后按 ×2 递增并加随机抖动；上游给了 <code>Retry-After</code> 就听它的（上限 10 秒）。</span>
+            </label>
           </div>
           <button class="btn btn-primary btn-sm" data-act="save-settings">保存设置</button>
         </div>
@@ -2674,6 +2697,11 @@ document.addEventListener('click', async (ev) => {
             logContent: $('#set-logmode').value,
             logContentMax: Number($('#set-logmax').value) || 2000,
             streamUsage: $('#set-stream-usage') ? $('#set-stream-usage').checked : true,
+            retry: {
+              enabled: $('#set-retry-on') ? $('#set-retry-on').checked : true,
+              times: $('#set-retry-times') ? Number($('#set-retry-times').value) || 0 : 2,
+              baseMs: $('#set-retry-base') ? Number($('#set-retry-base').value) || 800 : 800,
+            },
           }),
         });
         await refreshAll();

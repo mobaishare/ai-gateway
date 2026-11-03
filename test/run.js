@@ -71,7 +71,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 function startFakeUpstream(port, opts = {}) {
   const http = require('http');
-  const { alwaysFail = false, tag = 'A' } = opts;
+  const {
+    alwaysFail = false, tag = 'A',
+    // 前 failFirst 次返回 failStatus（模拟 503 繁忙 / 429 限流），之后恢复正常
+    failFirst = 0, failStatus = 503, retryAfter = 0,
+  } = opts;
+  let hits = 0;
 
   const server = http.createServer((req, res) => {
     if (req.url.endsWith('/v1/models')) {
@@ -82,9 +87,21 @@ function startFakeUpstream(port, opts = {}) {
     let raw = '';
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {
+      hits += 1;
+      server.hits = hits;
+      server.resetHits = () => { hits = 0; server.hits = 0; };
+
       if (alwaysFail) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.writeHead(failStatus, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ error: { message: `upstream ${tag} intentionally broken` } }));
+      }
+      if (hits <= failFirst) {
+        const h = { 'Content-Type': 'application/json' };
+        if (retryAfter) h['Retry-After'] = String(retryAfter);
+        res.writeHead(failStatus, h);
+        return res.end(JSON.stringify({
+          error: { message: 'Service is too busy. We advise users to temporarily switch to alternative LLM API service providers.', type: 'upstream_error' },
+        }));
       }
 
       let body = {};
@@ -492,6 +509,55 @@ async function callUntilBlocked(key, maxCalls = 60) {
       body: { model: 'fake-model', messages: [{ role: 'user', content: '全都坏了' }] },
     });
     check('所有渠道都失败时返回 502', r13.status === 502, `HTTP ${r13.status} ${JSON.stringify(r13.data).slice(0, 160)}`);
+
+    // ============================================================
+    section('⑬b 上游繁忙自动重试');
+    // 真实场景：DeepSeek 返回 503「Service is too busy」，属于瞬时故障，应重试自愈而不是直接失败
+    await req('/api/settings', { method: 'PUT', token: T, body: { retry: { enabled: true, times: 2, baseMs: 100 } } });
+    const upBusy = await startFakeUpstream(8793, { tag: 'BUSY', failFirst: 2, failStatus: 503 });
+    const upDown = await startFakeUpstream(8792, { tag: 'DOWN', alwaysFail: true, failStatus: 503 });
+    const upAuth = await startFakeUpstream(8791, { tag: 'AUTH', alwaysFail: true, failStatus: 401 });
+    await mkProvider('假上游-繁忙', 'http://127.0.0.1:8793', 9, ['fake-busy']);
+    await mkProvider('假上游-持续繁忙', 'http://127.0.0.1:8792', 9, ['fake-down']);
+    await mkProvider('假上游-鉴权失败', 'http://127.0.0.1:8791', 9, ['fake-auth']);
+
+    const rBusy = await req('/v1/chat/completions', {
+      method: 'POST', token: e11.key,
+      body: { model: 'fake-busy', messages: [{ role: 'user', content: '繁忙重试' }] },
+    });
+    check('上游 503 重试后成功（共请求 3 次）',
+      rBusy.status === 200 && upBusy.hits === 3,
+      `HTTP ${rBusy.status} hits=${upBusy.hits}`);
+    check('重试成功后仍能取到上游 usage', rBusy.data.usage?.total_tokens === 333, JSON.stringify(rBusy.data.usage));
+
+    const rDown = await req('/v1/chat/completions', {
+      method: 'POST', token: e11.key,
+      body: { model: 'fake-down', messages: [{ role: 'user', content: '一直繁忙' }] },
+    });
+    check('持续 503 重试耗尽后返回 502', rDown.status === 502, `HTTP ${rDown.status}`);
+    check('持续 503 确实重试了 2 次（共 3 次请求）', upDown.hits === 3, `hits=${upDown.hits}`);
+    check('错误信息写明已重试次数', /已自动重试 2 次/.test(rDown.data.error?.message || ''), rDown.data.error?.message);
+
+    const rAuth = await req('/v1/chat/completions', {
+      method: 'POST', token: e11.key,
+      body: { model: 'fake-auth', messages: [{ role: 'user', content: '鉴权失败' }] },
+    });
+    check('4xx 不做重试（鉴权失败只请求 1 次）', upAuth.hits === 1 && rAuth.status !== 200,
+      `hits=${upAuth.hits} HTTP ${rAuth.status}`);
+
+    // 关掉开关后应当立刻失败，不再退避重试
+    await req('/api/settings', { method: 'PUT', token: T, body: { retry: { enabled: false } } });
+    upBusy.resetHits();
+    const rNoRetry = await req('/v1/chat/completions', {
+      method: 'POST', token: e11.key,
+      body: { model: 'fake-busy', messages: [{ role: 'user', content: '关闭重试' }] },
+    });
+    check('关闭重试后只请求 1 次并直接失败', upBusy.hits === 1 && rNoRetry.status === 502,
+      `hits=${upBusy.hits} HTTP ${rNoRetry.status}`);
+
+    // 恢复默认，避免影响后续用例
+    await req('/api/settings', { method: 'PUT', token: T, body: { retry: { enabled: true, times: 2, baseMs: 800 } } });
+    upBusy.close(); upDown.close(); upAuth.close();
 
     // ================= 模型权限控制 =================
     const d14 = await mkDept('测试部-模型白名单', { dailyTokens: BIG, monthlyTokens: 0, rpm: 0, concurrency: 0 });
