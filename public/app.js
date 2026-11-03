@@ -562,6 +562,7 @@ async function renderProviders() {
   state.providers = d.items;
   const pr = await api('/api/pricing');
   const pricing = pr.items || {};
+  const presets = pr.presets || {};
   const peak = pr.peak || { enabled: true, days: [1, 2, 3, 4, 5], windows: [['09:00', '12:00'], ['14:00', '18:00']], holidays: [] };
   state.rawPricing = pricing;
 
@@ -610,9 +611,12 @@ async function renderProviders() {
       <div class="card-head">
         <div>
           <h3>模型单价 ${pr.peak && pr.peak.enabled !== false ? `<span class="tag ${pr.nowPeak ? 'tag-warn' : 'tag-brand'}" style="font-size:10.5px;padding:1px 8px">${pr.nowPeak ? '当前：高峰时段' : '当前：空闲时段'}</span>` : ''}</h3>
-          <div class="sub">元 / 百万 Tokens · 用于成本核算，与转发无关；未定价的模型成本按 0 计</div>
+          <div class="sub">元 / 百万 tokens · 用于成本核算，与转发无关；未定价的模型成本按 0 计${presets.updatedAt ? ` · 内置官方参考价 ${presets.updatedAt}（${presets.total} 个模型，USD 按 1:${presets.usdCny} 折算）` : ''}</div>
         </div>
-        <button class="btn btn-primary btn-sm" data-act="save-pricing">保存单价</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" data-act="load-presets">载入官方参考价</button>
+          <button class="btn btn-primary btn-sm" data-act="save-pricing">保存单价</button>
+        </div>
       </div>
       <div class="card-body tight">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:2px 0 12px;border-bottom:1px solid var(--border);margin-bottom:12px">
@@ -634,15 +638,15 @@ async function renderProviders() {
           <input type="text" id="pr-holidays" class="input-sm" style="flex:1;min-width:180px" value="${esc((peak.holidays || []).join(', '))}" placeholder="法定节假日日期，逗号分隔，如 2026-10-01, 2026-10-02" />
         </div>
         <div class="table-wrap">
-        <table class="tbl">
+        <table class="tbl price-tbl">
           <thead><tr>
-            <th>模型</th>
-            <th style="width:110px">输入（¥/百万）</th>
-            <th style="width:110px">输出（¥/百万）</th>
-            <th style="width:105px">缓存命中</th>
-            <th style="width:105px">缓存写入</th>
-            <th style="width:105px">空闲输入</th>
-            <th style="width:105px">空闲输出</th>
+            <th style="width:170px">模型</th>
+            <th style="width:92px">输入（¥/百万）</th>
+            <th style="width:92px">输出（¥/百万）</th>
+            <th style="width:88px">缓存命中</th>
+            <th style="width:88px">缓存写入</th>
+            <th style="width:88px">空闲输入</th>
+            <th style="width:88px">空闲输出</th>
           </tr></thead>
           <tbody>
             ${(() => {
@@ -689,7 +693,7 @@ async function renderProviders() {
       <div class="card-body">
         <textarea id="pr-advanced" class="input-sm" style="width:100%;min-height:180px;font-family:var(--mono,monospace);font-size:12px;line-height:1.6">${esc(JSON.stringify(pricing, null, 2))}</textarea>
         <p class="field-hint" style="margin-top:8px">
-          结构示例：<code>{ "qwen-plus": { "in": 0.8, "out": 2, "tiers": [ { "upTo": 131072, "in": 0.8, "out": 2 }, { "upTo": 262144, "in": 2.4, "out": 9.6 } ] } }</code>。
+          结构示例：<code>{ "qwen3.7-plus": { "in": 2, "out": 8, "cacheIn": 0.4, "tiers": [ { "upTo": 262144, "in": 2, "out": 8, "cacheIn": 0.4 }, { "upTo": 1048576, "in": 6, "out": 24, "cacheIn": 1.2 } ] } }</code>。
           upTo 为该档输入 tokens 上限（含），超过最后一档按基础价计；档内可再配 cacheIn / cacheWrite。
         </p>
       </div>
@@ -1826,6 +1830,18 @@ document.addEventListener('click', async (ev) => {
         } }) });
         await renderProviders();
         toast('单价已保存，之后的调用将按新价格（含分时/缓存/分档）核算成本', 'ok');
+        break;
+      }
+
+      case 'load-presets': {
+        const ok = window.confirm(
+          '将写入内置官方参考价（各厂商官方价，美元按汇率折算）。\n\n' +
+          '同名模型的单价会被覆盖，自定义的其他模型保持不变。\n\n继续？',
+        );
+        if (!ok) break;
+        const r = await api('/api/pricing/presets', { method: 'POST', body: JSON.stringify({ overwrite: true }) });
+        await renderProviders();
+        toast(`已载入官方参考价（${r.updatedAt}）：新增 ${r.added} 个、更新 ${r.updated} 个模型`, 'ok');
         break;
       }
 

@@ -1,0 +1,14 @@
+- generic [ref=e3]:
+  - img [ref=e5]
+  - heading "AI API 分流平台" [level=1] [ref=e8]
+  - paragraph [ref=e9]: 内部统一入口 · 部门与员工配额管理
+  - generic [ref=e10]:
+    - generic [ref=e11]:
+      - generic [ref=e12]: 管理员账号
+      - textbox "管理员账号" [ref=e13]: admin
+    - generic [ref=e14]:
+      - generic [ref=e15]: 密码
+      - textbox "密码" [ref=e16]:
+        - /placeholder: 默认 admin123
+    - button "登 录" [ref=e18] [cursor=pointer]
+  - paragraph [ref=e19]: 首次登录请使用 admin / admin123，登录后请在「系统设置」中修改密码。

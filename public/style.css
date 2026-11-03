@@ -1012,3 +1012,6 @@ pre.code .k { color: #8ab4ff; }
   font-weight: 600;
   color: var(--brand);
 }
+
+/* 模型单价表：数字输入收窄，避免 7 列横向溢出 */
+.price-tbl .input-sm { min-width: 0; width: 100%; padding-left: 8px; padding-right: 6px; }

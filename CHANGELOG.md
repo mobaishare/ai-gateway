@@ -1,5 +1,26 @@
 # 版本记录
 
+## v1.3.2（2026-11-03）
+
+### 新增
+
+- **内置官方参考价目表**（`lib/preset-prices.js`）：按各厂商官方定价页整理 8 家厂商 37 个模型的当前价格，首次启动/版本更新时自动补进「尚未定价」的模型；渠道页新增「载入官方参考价」按钮，可一键写入（默认覆盖同名模型，也可按厂商选择性载入，或 `overwrite:false` 只补空缺）。
+- 覆盖与计价结构：
+  - DeepSeek：`deepseek-flash` / `deepseek-v4-pro`（峰谷分时 + 缓存命中）
+  - OpenAI：`gpt-5.5/5.4/5/5-mini/5-nano`、`gpt-4.1`、`gpt-4o`、`o3`（含 cached input）
+  - Anthropic：`claude-opus-5-5` / `claude-sonnet-5-5` / `claude-haiku-5-5` / `claude-opus-4-8` / `claude-sonnet-4-6`（缓存读 + 缓存写，Haiku 100K 断点用 tiers）
+  - Google：`gemini-3.1-pro` / `gemini-3.8-flash` / `gemini-2.5-pro/flash/flash-lite`（200K 断点用 tiers）
+  - 通义千问：`qwen3.8-max` / `qwen3.7-max` / `qwen3.8-flash` / `qwen3.7-plus` / `qwen3.7-flash`（输入长度阶梯）
+  - Kimi：`kimi-k3.1-pro` / `highspeed` / `kimi-k3`（缓存命中 + 缓存写入）
+  - 豆包：`doubao-seed-2.1-pro/turbo`、`2.0-pro/mini`（32K/128K/256K 阶梯）
+  - 智谱：`glm-5.3` / `glm-5.2`
+- 美元定价按 1 USD = 7.2 CNY 折算（`preset-prices.js` 顶部 `USD_CNY` 可改），人民币定价原样录入；来源链接与核对日期写在各厂商条目里。
+- 演示数据同步换用现行模型；单价表列宽收窄，7 列在常见屏宽下完整可见；测试新增 6 项，共 76 项全部通过。
+
+### 说明
+
+- 参考价仅用于内部成本核算，以厂商账单为准；官方调价后可直接改表，或更新 `preset-prices.js` 的 `updatedAt` 触发重新补全。
+
 ## v1.3.1（2026-11-03）
 
 ### 修正（重要）

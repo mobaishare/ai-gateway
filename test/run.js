@@ -584,6 +584,35 @@ async function callUntilBlocked(key, maxCalls = 60) {
     // 收尾：关闭分时，避免影响其他用例
     await req('/api/settings', { method: 'PUT', token: T, body: { peak: { ...peakWin, enabled: false } } });
 
+    // ================= 内置官方参考价 =================
+    const prPreset = await req('/api/pricing', { token: T });
+    check('单价接口带出官方参考价摘要', prPreset.data.presets?.total >= 25 && Array.isArray(prPreset.data.presets.providers) && prPreset.data.presets.providers.length >= 7,
+      JSON.stringify({ total: prPreset.data.presets?.total, providers: prPreset.data.presets?.providers?.length }));
+
+    // 清空单价后载入 → 全部按参考价补齐
+    await req('/api/pricing', { method: 'PUT', token: T, body: { pricing: { 'fake-model': { in: 10, out: 40 } } } });
+    const loadPresets = await req('/api/pricing/presets', { method: 'POST', token: T, body: { overwrite: true } });
+    check('载入官方参考价成功', loadPresets.status === 200 && loadPresets.data.added >= 25, JSON.stringify(loadPresets.data));
+
+    const prAfter = await req('/api/pricing', { token: T });
+    const items = prAfter.data.items || {};
+    check('DeepSeek 参考价含空闲时段价', items['deepseek-flash']?.in === 2 && items['deepseek-flash']?.idle?.in === 1, JSON.stringify(items['deepseek-flash']));
+    check('Claude 参考价含缓存写入价', (items['claude-sonnet-5-5']?.cacheWrite || 0) > 0, JSON.stringify(items['claude-sonnet-5-5']));
+    check('Qwen 参考价含输入长度分档', Array.isArray(items['qwen3.7-plus']?.tiers) && items['qwen3.7-plus'].tiers.length === 2, JSON.stringify(items['qwen3.7-plus']));
+    check('自定义模型未被参考价影响', items['fake-model']?.in === 10, JSON.stringify(items['fake-model']));
+
+    // 不覆盖模式：自定义价保持不变
+    await req('/api/pricing', { method: 'PUT', token: T, body: { pricing: { 'gpt-5-mini': { in: 999, out: 999 } } } });
+    const noOverwrite = await req('/api/pricing/presets', { method: 'POST', token: T, body: { overwrite: false } });
+    const prKeep = await req('/api/pricing', { token: T });
+    check('overwrite=false 时保留自定义单价', noOverwrite.data.updated === 0 && prKeep.data.items['gpt-5-mini']?.in === 999, JSON.stringify({ res: noOverwrite.data, price: prKeep.data.items['gpt-5-mini'] }));
+
+    // 按厂商选择性载入
+    await req('/api/pricing', { method: 'PUT', token: T, body: { pricing: {} } });
+    const onlyKimi = await req('/api/pricing/presets', { method: 'POST', token: T, body: { providers: ['kimi'], overwrite: true } });
+    const prKimi = await req('/api/pricing', { token: T });
+    check('可按厂商选择性载入参考价', onlyKimi.data.added === 3 && prKimi.data.items['kimi-k3.1-pro']?.in === 13 && !prKimi.data.items['gpt-5'], JSON.stringify(onlyKimi.data));
+
   } catch (e) {
     fail++;
     failures.push('测试执行异常：' + e.message);

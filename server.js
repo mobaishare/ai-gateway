@@ -21,6 +21,7 @@ const quota = require('./lib/quota');
 const proxy = require('./lib/proxy');
 const plugins = require('./lib/plugins');
 const alerts = require('./lib/alerts');
+const { PRESETS, presetSummary } = require('./lib/preset-prices');
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -518,7 +519,28 @@ async function handleApi(req, res, url) {
       nowPeak: store.isPeakNow(),
       nowIdle: store.isIdleNow(),
       hasIdlePricing: Object.values(db.pricing).some((x) => x.idle && typeof x.idle === 'object'),
+      presets: presetSummary(),
     });
+  }
+  // 一键载入内置官方参考价（默认覆盖同名模型，不影响自定义模型）
+  if (p === '/api/pricing/presets' && method === 'POST') {
+    const body = await readBody(req, 64 * 1024);
+    const ids = Array.isArray(body.providers) && body.providers.length ? body.providers.map(String) : null;
+    const overwrite = body.overwrite !== false;
+    let added = 0;
+    let updated = 0;
+    for (const prov of PRESETS.providers) {
+      if (ids && !ids.includes(prov.id)) continue;
+      for (const [model, price] of Object.entries(prov.models)) {
+        const exists = !!db.pricing[model];
+        if (exists && !overwrite) continue;
+        db.pricing[model] = JSON.parse(JSON.stringify(price));
+        if (exists) updated++; else added++;
+      }
+    }
+    db.settings.presetsVersion = PRESETS.updatedAt;
+    store.save();
+    return json(res, 200, { ok: true, added, updated, total: added + updated, updatedAt: PRESETS.updatedAt });
   }
   if (p === '/api/pricing' && method === 'PUT') {
     const body = await readBody(req, 256 * 1024);

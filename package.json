@@ -1,6 +1,6 @@
 {
   "name": "ai-gateway",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "公司内部 AI API 分流网关：统一密钥池、部门/员工配额管理、员工特例优先、分时成本核算与用量告警",
   "main": "server.js",
   "scripts": {
