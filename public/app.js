@@ -260,7 +260,7 @@ function renderDashboard() {
       <div class="kpi">
         <div class="kpi-label">今日 Token</div>
         <div class="kpi-value">${shortNum(o.today.tokens)}<small>tokens</small></div>
-        <div class="kpi-foot">今日请求 ${fmt(o.today.reqs)} 次 · ${costText(o.today.cost)}${o.nowOffPeak ? ' · 🌙 闲时计价中' : ''}</div>
+        <div class="kpi-foot">今日请求 ${fmt(o.today.reqs)} 次 · ${costText(o.today.cost)}${o.nowIdle && o.hasIdlePricing ? ' · 🌙 空闲时段计价中' : ''}</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">本月 Token</div>
@@ -562,7 +562,8 @@ async function renderProviders() {
   state.providers = d.items;
   const pr = await api('/api/pricing');
   const pricing = pr.items || {};
-  const offPeak = pr.offPeak || { enabled: true, start: '00:30', end: '08:30' };
+  const peak = pr.peak || { enabled: true, days: [1, 2, 3, 4, 5], windows: [['09:00', '12:00'], ['14:00', '18:00']], holidays: [] };
+  state.rawPricing = pricing;
 
   const cards = d.items.map((p) => `
     <div class="provider-card ${p.status === 'active' ? '' : 'disabled'}">
@@ -608,61 +609,88 @@ async function renderProviders() {
     <div class="card" style="margin-top:16px">
       <div class="card-head">
         <div>
-          <h3>模型单价</h3>
+          <h3>模型单价 ${pr.peak && pr.peak.enabled !== false ? `<span class="tag ${pr.nowPeak ? 'tag-warn' : 'tag-brand'}" style="font-size:10.5px;padding:1px 8px">${pr.nowPeak ? '当前：高峰时段' : '当前：空闲时段'}</span>` : ''}</h3>
           <div class="sub">元 / 百万 Tokens · 用于成本核算，与转发无关；未定价的模型成本按 0 计</div>
         </div>
         <button class="btn btn-primary btn-sm" data-act="save-pricing">保存单价</button>
       </div>
       <div class="card-body tight">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:2px 0 12px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:2px 0 12px;border-bottom:1px solid var(--border);margin-bottom:12px">
           <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap">
-            <input type="checkbox" id="pr-op-enabled" ${offPeak.enabled ? 'checked' : ''} />
-            启用闲时计价
+            <input type="checkbox" id="pr-peak-enabled" ${peak.enabled !== false ? 'checked' : ''} />
+            启用高峰时段计价
           </label>
-          <span style="font-size:12.5px">时段</span>
-          <input type="time" id="pr-op-start" class="input-sm" style="width:110px" value="${esc(offPeak.start || '00:30')}" />
-          <span style="font-size:12.5px">–</span>
-          <input type="time" id="pr-op-end" class="input-sm" style="width:110px" value="${esc(offPeak.end || '08:30')}" />
-          <span class="field-hint" style="margin:0">北京时间（UTC+8）· 支持跨零点 · 只对填写了闲时单价的模型生效，如 DeepSeek 闲时 00:30–08:30</span>
+          <span style="font-size:12.5px">高峰日</span>
+          ${['日', '一', '二', '三', '四', '五', '六'].map((d, i) => `
+            <label style="display:flex;align-items:center;gap:3px;font-size:12px"><input type="checkbox" class="pr-peak-day" value="${i}" ${(peak.days || [1, 2, 3, 4, 5]).includes(i) ? 'checked' : ''} />${d}</label>`).join('')}
+          <span style="font-size:12.5px">高峰时段</span>
+          <input type="time" id="pr-w1-start" class="input-sm" style="width:100px" value="${esc(peak.windows?.[0]?.[0] || '09:00')}" />
+          <span>–</span>
+          <input type="time" id="pr-w1-end" class="input-sm" style="width:100px" value="${esc(peak.windows?.[0]?.[1] || '12:00')}" />
+          <input type="time" id="pr-w2-start" class="input-sm" style="width:100px" value="${esc(peak.windows?.[1]?.[0] || '14:00')}" />
+          <span>–</span>
+          <input type="time" id="pr-w2-end" class="input-sm" style="width:100px" value="${esc(peak.windows?.[1]?.[1] || '18:00')}" />
+          <span style="font-size:12.5px">节假日</span>
+          <input type="text" id="pr-holidays" class="input-sm" style="flex:1;min-width:180px" value="${esc((peak.holidays || []).join(', '))}" placeholder="法定节假日日期，逗号分隔，如 2026-10-01, 2026-10-02" />
         </div>
         <div class="table-wrap">
         <table class="tbl">
           <thead><tr>
             <th>模型</th>
-            <th style="width:120px">输入（¥/百万）</th>
-            <th style="width:120px">输出（¥/百万）</th>
-            <th style="width:120px">缓存命中输入</th>
-            <th style="width:120px">闲时输入</th>
-            <th style="width:120px">闲时输出</th>
+            <th style="width:110px">输入（¥/百万）</th>
+            <th style="width:110px">输出（¥/百万）</th>
+            <th style="width:105px">缓存命中</th>
+            <th style="width:105px">缓存写入</th>
+            <th style="width:105px">空闲输入</th>
+            <th style="width:105px">空闲输出</th>
           </tr></thead>
           <tbody>
             ${(() => {
               const models = [...new Set([...d.items.flatMap((p) => p.models || []).filter((m) => m !== '*'), ...Object.keys(pricing)])];
-              const rows = models.map((m, i) => `
+              const rows = models.map((m) => `
                 <tr>
                   <td><span class="tag tag-grey">${esc(m)}</span></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm pr-in" data-model="${esc(m)}" value="${pricing[m]?.in ?? ''}" placeholder="未定价" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm pr-out" data-model="${esc(m)}" value="${pricing[m]?.out ?? ''}" placeholder="未定价" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm pr-cachein" data-model="${esc(m)}" value="${pricing[m]?.cacheIn ?? ''}" placeholder="同输入价" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm pr-opin" data-model="${esc(m)}" value="${pricing[m]?.offPeak?.in ?? ''}" placeholder="不分时" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm pr-opout" data-model="${esc(m)}" value="${pricing[m]?.offPeak?.out ?? ''}" placeholder="不分时" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm pr-cachewrite" data-model="${esc(m)}" value="${pricing[m]?.cacheWrite ?? ''}" placeholder="同输入价" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm pr-idlein" data-model="${esc(m)}" value="${pricing[m]?.idle?.in ?? ''}" placeholder="不分时" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm pr-idleout" data-model="${esc(m)}" value="${pricing[m]?.idle?.out ?? ''}" placeholder="不分时" /></td>
                 </tr>`).join('');
               return rows + `
                 <tr>
-                  <td><input type="text" class="input-sm" id="pr-new-model" placeholder="新模型名，如 claude-4-sonnet" style="width:100%" /></td>
+                  <td><input type="text" class="input-sm" id="pr-new-model" placeholder="新模型名，如 deepseek-flash" style="width:100%" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-in" placeholder="输入单价" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-out" placeholder="输出单价" /></td>
                   <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-cachein" placeholder="可选" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-opin" placeholder="可选" /></td>
-                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-opout" placeholder="可选" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-cachewrite" placeholder="可选" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-idlein" placeholder="可选" /></td>
+                  <td><input type="number" step="0.01" min="0" class="input-sm" id="pr-new-idleout" placeholder="可选" /></td>
                 </tr>`;
             })()}
           </tbody>
         </table>
         </div>
         <p class="field-hint" style="margin-top:10px">
-          分时与缓存计价示例（deepseek-chat 官方价）：峰时输入 ¥2 / 输出 ¥8 / 缓存命中 ¥0.2；闲时（00:30–08:30）输入 ¥1 / 输出 ¥4 / 缓存命中 ¥0.1。
-          填了「缓存命中输入」后，上游 usage 里的缓存命中 tokens（DeepSeek prompt_cache_hit_tokens、OpenAI cached_tokens）会自动按该价核算；「闲时输入 / 闲时输出」留空表示该模型不区分时段。价格随官方调整，以账单为准。
+          高峰时段规则（北京时间 UTC+8）：命中「高峰日 + 高峰时段」按输入/输出价计，其余（含节假日全天）按「空闲输入/空闲输出」计——贴合 DeepSeek 官方（工作日 9:00–12:00、14:00–18:00 为高峰）。
+          缓存命中/写入：上游 usage 里的缓存 tokens（DeepSeek prompt_cache_hit_tokens、OpenAI cached_tokens、Anthropic cache_creation_input_tokens）自动按对应价核算，留空按输入价。各列留空都有合理回落，价格随官方调整，以账单为准。
+        </p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head">
+        <div>
+          <h3>高级定价（JSON）</h3>
+          <div class="sub">分档计价（Qwen 阶梯价、Gemini 长上下文加价）等进阶字段在此编辑；配置了 tiers 的模型优先按输入长度分档，分时规则不再生效</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" data-act="save-pricing-advanced">保存高级定价</button>
+      </div>
+      <div class="card-body">
+        <textarea id="pr-advanced" class="input-sm" style="width:100%;min-height:180px;font-family:var(--mono,monospace);font-size:12px;line-height:1.6">${esc(JSON.stringify(pricing, null, 2))}</textarea>
+        <p class="field-hint" style="margin-top:8px">
+          结构示例：<code>{ "qwen-plus": { "in": 0.8, "out": 2, "tiers": [ { "upTo": 131072, "in": 0.8, "out": 2 }, { "upTo": 262144, "in": 2.4, "out": 9.6 } ] } }</code>。
+          upTo 为该档输入 tokens 上限（含），超过最后一档按基础价计；档内可再配 cacheIn / cacheWrite。
         </p>
       </div>
     </div>`;
@@ -1748,46 +1776,74 @@ document.addEventListener('click', async (ev) => {
       }
 
       case 'save-pricing': {
-        const inMap = new Map($$('.pr-in').map((el) => [el.dataset.model, el.value]));
-        const outMap = new Map($$('.pr-out').map((el) => [el.dataset.model, el.value]));
-        const cacheMap = new Map($$('.pr-cachein').map((el) => [el.dataset.model, el.value]));
-        const opinMap = new Map($$('.pr-opin').map((el) => [el.dataset.model, el.value]));
-        const opoutMap = new Map($$('.pr-opout').map((el) => [el.dataset.model, el.value]));
-        const pricing = {};
-        for (const [m, vin] of inMap) {
-          const entry = { in: Number(vin) || 0, out: Number(outMap.get(m) || 0) };
-          const vc = cacheMap.get(m);
-          if (vc !== undefined && vc !== '') entry.cacheIn = Number(vc) || 0;
-          const oi = opinMap.get(m);
-          const oo = opoutMap.get(m);
-          if ((oi !== undefined && oi !== '') || (oo !== undefined && oo !== '')) {
-            entry.offPeak = {};
-            if (oi !== undefined && oi !== '') entry.offPeak.in = Number(oi) || 0;
-            if (oo !== undefined && oo !== '') entry.offPeak.out = Number(oo) || 0;
-          }
-          pricing[m] = entry;
+        // 以现有定价为底（保留 cacheWrite / tiers / idle.cacheIn 等高级字段），再套用表格输入
+        const base = JSON.parse(JSON.stringify(state.rawPricing || {}));
+        const num = (v) => (v !== '' && v !== undefined && v !== null ? Math.max(0, Number(v) || 0) : undefined);
+        const setOrDel = (obj, key, val) => { if (val === undefined) delete obj[key]; else obj[key] = val; };
+        const applyRow = (m, els) => {
+          const entry = { ...(base[m] || {}) };
+          entry.in = num(els.in) ?? 0;
+          entry.out = num(els.out) ?? 0;
+          setOrDel(entry, 'cacheIn', num(els.cacheIn));
+          setOrDel(entry, 'cacheWrite', num(els.cacheWrite));
+          const idle = { ...(entry.idle || {}) };
+          if (els.idleIn !== undefined) setOrDel(idle, 'in', num(els.idleIn));
+          if (els.idleOut !== undefined) setOrDel(idle, 'out', num(els.idleOut));
+          if (Object.keys(idle).length) entry.idle = idle; else delete entry.idle;
+          base[m] = entry;
+        };
+        for (const el of $$('.pr-in')) {
+          const m = el.dataset.model;
+          applyRow(m, {
+            in: el.value,
+            out: $$('.pr-out').find((x) => x.dataset.model === m)?.value ?? '',
+            cacheIn: $$('.pr-cachein').find((x) => x.dataset.model === m)?.value ?? '',
+            cacheWrite: $$('.pr-cachewrite').find((x) => x.dataset.model === m)?.value ?? '',
+            idleIn: $$('.pr-idlein').find((x) => x.dataset.model === m)?.value ?? '',
+            idleOut: $$('.pr-idleout').find((x) => x.dataset.model === m)?.value ?? '',
+          });
         }
         const nm = $('#pr-new-model').value.trim();
         if (nm) {
-          pricing[nm] = { in: Number($('#pr-new-in').value) || 0, out: Number($('#pr-new-out').value) || 0 };
-          const nc = $('#pr-new-cachein').value;
-          const ni = $('#pr-new-opin').value;
-          const no = $('#pr-new-opout').value;
-          if (nc !== '') pricing[nm].cacheIn = Number(nc) || 0;
-          if (ni !== '' || no !== '') {
-            pricing[nm].offPeak = {};
-            if (ni !== '') pricing[nm].offPeak.in = Number(ni) || 0;
-            if (no !== '') pricing[nm].offPeak.out = Number(no) || 0;
-          }
+          applyRow(nm, {
+            in: $('#pr-new-in').value,
+            out: $('#pr-new-out').value,
+            cacheIn: $('#pr-new-cachein').value,
+            cacheWrite: $('#pr-new-cachewrite').value,
+            idleIn: $('#pr-new-idlein').value,
+            idleOut: $('#pr-new-idleout').value,
+          });
         }
-        await api('/api/pricing', { method: 'PUT', body: JSON.stringify({ pricing }) });
-        await api('/api/settings', { method: 'PUT', body: JSON.stringify({ offPeak: {
-          enabled: $('#pr-op-enabled').checked,
-          start: $('#pr-op-start').value || '00:30',
-          end: $('#pr-op-end').value || '08:30',
+        await api('/api/pricing', { method: 'PUT', body: JSON.stringify({ pricing: base }) });
+        await api('/api/settings', { method: 'PUT', body: JSON.stringify({ peak: {
+          enabled: $('#pr-peak-enabled').checked,
+          days: $$('.pr-peak-day').filter((x) => x.checked).map((x) => Number(x.value)),
+          windows: [
+            [$('#pr-w1-start').value, $('#pr-w1-end').value],
+            [$('#pr-w2-start').value, $('#pr-w2-end').value],
+          ].filter(([s, e]) => s && e),
+          holidays: $('#pr-holidays').value.split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean),
         } }) });
         await renderProviders();
-        toast('单价已保存，之后的调用将按新价格（含分时/缓存）核算成本', 'ok');
+        toast('单价已保存，之后的调用将按新价格（含分时/缓存/分档）核算成本', 'ok');
+        break;
+      }
+
+      case 'save-pricing-advanced': {
+        let parsed;
+        try {
+          parsed = JSON.parse($('#pr-advanced').value || '{}');
+        } catch (e) {
+          toast('JSON 格式有误：' + e.message, 'err');
+          break;
+        }
+        if (typeof parsed !== 'object' || Array.isArray(parsed) || !parsed) {
+          toast('高级定价需要是一个对象，如 { "模型名": { ... } }', 'err');
+          break;
+        }
+        await api('/api/pricing', { method: 'PUT', body: JSON.stringify({ pricing: parsed }) });
+        await renderProviders();
+        toast('高级定价已保存', 'ok');
         break;
       }
 

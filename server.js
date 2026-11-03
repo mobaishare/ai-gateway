@@ -331,7 +331,12 @@ async function handleApi(req, res, url) {
   if (p === '/api/me' && method === 'GET') return json(res, 200, { user: admin.user });
 
   if (p === '/api/overview' && method === 'GET') {
-    return json(res, 200, { ...overview(), nowOffPeak: store.isOffPeakNow(), settings: { platformName: db.settings.platformName, onExceed: db.settings.onExceed } });
+    return json(res, 200, {
+      ...overview(),
+      nowIdle: store.isIdleNow(),
+      hasIdlePricing: Object.values(db.pricing).some((x) => x.idle && typeof x.idle === 'object'),
+      settings: { platformName: db.settings.platformName, onExceed: db.settings.onExceed },
+    });
   }
 
   // ---------------- 部门
@@ -505,12 +510,14 @@ async function handleApi(req, res, url) {
     });
   }
 
-  // ---------------- 模型单价（成本核算，支持峰时/闲时分时与缓存命中单价）
+  // ---------------- 模型单价（成本核算，支持高峰/空闲分时与缓存命中单价）
   if (p === '/api/pricing' && method === 'GET') {
     return json(res, 200, {
       items: db.pricing,
-      offPeak: db.settings.offPeak || {},
-      nowOffPeak: store.isOffPeakNow(),
+      peak: db.settings.peak || {},
+      nowPeak: store.isPeakNow(),
+      nowIdle: store.isIdleNow(),
+      hasIdlePricing: Object.values(db.pricing).some((x) => x.idle && typeof x.idle === 'object'),
     });
   }
   if (p === '/api/pricing' && method === 'PUT') {
@@ -523,19 +530,42 @@ async function handleApi(req, res, url) {
         in: Math.max(0, Number(v.in) || 0),
         out: Math.max(0, Number(v.out) || 0),
       };
-      // 缓存命中输入单价（可选，留空则按输入价计）
+      // 缓存命中/缓存写入输入单价（可选，留空则按输入价计）
       if (v.cacheIn !== undefined && v.cacheIn !== null && v.cacheIn !== '') {
         entry.cacheIn = Math.max(0, Number(v.cacheIn) || 0);
       }
-      // 闲时单价（可选，任一字段填写即视为该模型启用分时计价）
-      if (v.offPeak && typeof v.offPeak === 'object') {
-        const op = {};
-        for (const k of ['in', 'out', 'cacheIn']) {
-          if (v.offPeak[k] !== undefined && v.offPeak[k] !== null && v.offPeak[k] !== '') {
-            op[k] = Math.max(0, Number(v.offPeak[k]) || 0);
+      if (v.cacheWrite !== undefined && v.cacheWrite !== null && v.cacheWrite !== '') {
+        entry.cacheWrite = Math.max(0, Number(v.cacheWrite) || 0);
+      }
+      // 空闲时段单价（可选，任一字段填写即视为该模型启用分时计价）
+      if (v.idle && typeof v.idle === 'object') {
+        const idle = {};
+        for (const k of ['in', 'out', 'cacheIn', 'cacheWrite']) {
+          if (v.idle[k] !== undefined && v.idle[k] !== null && v.idle[k] !== '') {
+            idle[k] = Math.max(0, Number(v.idle[k]) || 0);
           }
         }
-        if (Object.keys(op).length) entry.offPeak = op;
+        if (Object.keys(idle).length) entry.idle = idle;
+      }
+      // 按输入长度分档（可选，配置后优先于分时；Qwen 阶梯价 / Gemini 长上下文加价）
+      if (Array.isArray(v.tiers)) {
+        const tiers = v.tiers
+          .map((t) => {
+            if (!t || typeof t !== 'object') return null;
+            const tt = {};
+            const upTo = Math.round(Number(t.upTo) || 0);
+            if (upTo <= 0) return null;
+            tt.upTo = upTo;
+            for (const k of ['in', 'out', 'cacheIn', 'cacheWrite']) {
+              if (t[k] !== undefined && t[k] !== null && t[k] !== '') {
+                tt[k] = Math.max(0, Number(t[k]) || 0);
+              }
+            }
+            return tt;
+          })
+          .filter(Boolean)
+          .sort((a, b) => a.upTo - b.upTo);
+        if (tiers.length) entry.tiers = tiers;
       }
       out[name] = entry;
     }
@@ -558,12 +588,22 @@ async function handleApi(req, res, url) {
     if (typeof body.mockWhenNoProvider === 'boolean') db.settings.mockWhenNoProvider = body.mockWhenNoProvider;
     if (typeof body.webhookUrl === 'string') db.settings.webhookUrl = body.webhookUrl.trim();
     if (typeof body.alertsEnabled === 'boolean') db.settings.alertsEnabled = body.alertsEnabled;
-    // 闲时计价时段（北京时间）
-    if (body.offPeak && typeof body.offPeak === 'object') {
-      const w = db.settings.offPeak || (db.settings.offPeak = {});
-      if (typeof body.offPeak.enabled === 'boolean') w.enabled = body.offPeak.enabled;
-      if (typeof body.offPeak.start === 'string' && /^\d{1,2}:\d{2}$/.test(body.offPeak.start.trim())) w.start = body.offPeak.start.trim();
-      if (typeof body.offPeak.end === 'string' && /^\d{1,2}:\d{2}$/.test(body.offPeak.end.trim())) w.end = body.offPeak.end.trim();
+    // 高峰时段规则（北京时间）：工作日 + 多时间窗 + 法定节假日排除
+    if (body.peak && typeof body.peak === 'object') {
+      const w = db.settings.peak || (db.settings.peak = {});
+      if (typeof body.peak.enabled === 'boolean') w.enabled = body.peak.enabled;
+      if (Array.isArray(body.peak.days)) {
+        w.days = [...new Set(body.peak.days.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6))].sort();
+      }
+      if (Array.isArray(body.peak.windows)) {
+        w.windows = body.peak.windows
+          .filter((x) => Array.isArray(x) && x.length === 2)
+          .map(([s, e]) => [String(s).trim(), String(e).trim()])
+          .filter(([s, e]) => /^\d{1,2}:\d{2}$/.test(s) && /^\d{1,2}:\d{2}$/.test(e));
+      }
+      if (Array.isArray(body.peak.holidays)) {
+        w.holidays = [...new Set(body.peak.holidays.map((x) => String(x).trim()).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x)))].sort();
+      }
     }
     store.save();
     return json(res, 200, { ok: true });
@@ -785,6 +825,7 @@ async function handleGateway(req, res, url) {
     promptTokens: u.promptTokens,
     completionTokens: u.completionTokens,
     cacheTokens: u.cacheTokens,
+    cacheWriteTokens: u.cacheWriteTokens,
     totalTokens: u.totalTokens,
     latencyMs: Date.now() - startedAt,
     status: result.ok ? 'ok' : 'error',
