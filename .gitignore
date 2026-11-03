@@ -46,3 +46,5 @@ desktop.ini
 # ---------------- 调试残留 ----------------
 .playwright-cli/
 coverage/
+login.yaml
+snap.yaml
