@@ -331,7 +331,7 @@ async function handleApi(req, res, url) {
   if (p === '/api/me' && method === 'GET') return json(res, 200, { user: admin.user });
 
   if (p === '/api/overview' && method === 'GET') {
-    return json(res, 200, { ...overview(), settings: { platformName: db.settings.platformName, onExceed: db.settings.onExceed } });
+    return json(res, 200, { ...overview(), nowOffPeak: store.isOffPeakNow(), settings: { platformName: db.settings.platformName, onExceed: db.settings.onExceed } });
   }
 
   // ---------------- 部门
@@ -505,9 +505,13 @@ async function handleApi(req, res, url) {
     });
   }
 
-  // ---------------- 模型单价（成本核算）
+  // ---------------- 模型单价（成本核算，支持峰时/闲时分时与缓存命中单价）
   if (p === '/api/pricing' && method === 'GET') {
-    return json(res, 200, { items: db.pricing });
+    return json(res, 200, {
+      items: db.pricing,
+      offPeak: db.settings.offPeak || {},
+      nowOffPeak: store.isOffPeakNow(),
+    });
   }
   if (p === '/api/pricing' && method === 'PUT') {
     const body = await readBody(req, 256 * 1024);
@@ -515,10 +519,25 @@ async function handleApi(req, res, url) {
     for (const [model, v] of Object.entries(body.pricing || {})) {
       const name = String(model || '').trim();
       if (!name) continue;
-      out[name] = {
+      const entry = {
         in: Math.max(0, Number(v.in) || 0),
         out: Math.max(0, Number(v.out) || 0),
       };
+      // 缓存命中输入单价（可选，留空则按输入价计）
+      if (v.cacheIn !== undefined && v.cacheIn !== null && v.cacheIn !== '') {
+        entry.cacheIn = Math.max(0, Number(v.cacheIn) || 0);
+      }
+      // 闲时单价（可选，任一字段填写即视为该模型启用分时计价）
+      if (v.offPeak && typeof v.offPeak === 'object') {
+        const op = {};
+        for (const k of ['in', 'out', 'cacheIn']) {
+          if (v.offPeak[k] !== undefined && v.offPeak[k] !== null && v.offPeak[k] !== '') {
+            op[k] = Math.max(0, Number(v.offPeak[k]) || 0);
+          }
+        }
+        if (Object.keys(op).length) entry.offPeak = op;
+      }
+      out[name] = entry;
     }
     db.pricing = out;
     store.save();
@@ -539,6 +558,13 @@ async function handleApi(req, res, url) {
     if (typeof body.mockWhenNoProvider === 'boolean') db.settings.mockWhenNoProvider = body.mockWhenNoProvider;
     if (typeof body.webhookUrl === 'string') db.settings.webhookUrl = body.webhookUrl.trim();
     if (typeof body.alertsEnabled === 'boolean') db.settings.alertsEnabled = body.alertsEnabled;
+    // 闲时计价时段（北京时间）
+    if (body.offPeak && typeof body.offPeak === 'object') {
+      const w = db.settings.offPeak || (db.settings.offPeak = {});
+      if (typeof body.offPeak.enabled === 'boolean') w.enabled = body.offPeak.enabled;
+      if (typeof body.offPeak.start === 'string' && /^\d{1,2}:\d{2}$/.test(body.offPeak.start.trim())) w.start = body.offPeak.start.trim();
+      if (typeof body.offPeak.end === 'string' && /^\d{1,2}:\d{2}$/.test(body.offPeak.end.trim())) w.end = body.offPeak.end.trim();
+    }
     store.save();
     return json(res, 200, { ok: true });
   }
@@ -758,6 +784,7 @@ async function handleGateway(req, res, url) {
     model: body.model,
     promptTokens: u.promptTokens,
     completionTokens: u.completionTokens,
+    cacheTokens: u.cacheTokens,
     totalTokens: u.totalTokens,
     latencyMs: Date.now() - startedAt,
     status: result.ok ? 'ok' : 'error',

@@ -101,7 +101,7 @@ function startFakeUpstream(port, opts = {}) {
             res.write(`data: ${JSON.stringify({
               id, object: 'chat.completion.chunk', model: body.model,
               choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-              usage: { prompt_tokens: 11, completion_tokens: 22, total_tokens: 33 },
+              usage: { prompt_tokens: 11, completion_tokens: 22, total_tokens: 33, prompt_cache_hit_tokens: 2 },
             })}\n\n`);
             res.write('data: [DONE]\n\n');
             res.end();
@@ -122,7 +122,7 @@ function startFakeUpstream(port, opts = {}) {
         object: 'chat.completion',
         model: body.model,
         choices: [{ index: 0, message: { role: 'assistant', content: `来自 ${tag} 渠道的真实响应` }, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 111, completion_tokens: 222, total_tokens: 333 },
+        usage: { prompt_tokens: 111, completion_tokens: 222, total_tokens: 333, prompt_cache_hit_tokens: 5, prompt_tokens_details: { cached_tokens: 5 } },
       }));
     });
   });
@@ -498,6 +498,54 @@ async function callUntilBlocked(key, maxCalls = 60) {
       body: { webhookUrl: 'http://127.0.0.1:1/hook' },
     });
     check('不可达 webhook 返回 ok:false', badHook.status === 200 && badHook.data.ok === false, JSON.stringify(badHook.data));
+
+    // ================= 分时定价（峰时/闲时）与缓存命中计价 =================
+    // 假上游 usage 固定：prompt 111（其中缓存命中 5）/ completion 222
+    const bjMinNow = (() => {
+      const d = new Date(Date.now() + 8 * 3600 * 1000);
+      return d.getUTCHours() * 60 + d.getUTCMinutes();
+    })();
+    const hm = (min) => {
+      const t = ((min % 1440) + 1440) % 1440;
+      return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+    };
+    await req('/api/pricing', {
+      method: 'PUT', token: T,
+      body: { pricing: { 'fake-model': { in: 10, out: 40, cacheIn: 2, offPeak: { in: 5, out: 20, cacheIn: 1 } } } },
+    });
+
+    // 1) 闲时窗口覆盖当前时刻 → 按闲时价核算
+    await req('/api/settings', { method: 'PUT', token: T, body: { offPeak: { enabled: true, start: hm(bjMinNow - 15), end: hm(bjMinNow + 15) } } });
+    const r16 = await req('/v1/chat/completions', {
+      method: 'POST', token: e11.key,
+      body: { model: 'fake-model', messages: [{ role: 'user', content: '闲时核算' }] },
+    });
+    check('闲时时段内可正常调用', r16.status === 200, `HTTP ${r16.status}`);
+    const log16 = await req('/api/logs?employeeId=' + e11.id + '&limit=1', { token: T });
+    const item16 = log16.data.items[0] || {};
+    const exp16 = ((111 - 5) * 5 + 5 * 1 + 222 * 20) / 1e6; // (106*5 + 5*1 + 222*20)/1e6
+    check('闲时时段按闲时单价核算', Math.abs(item16.cost - exp16) < 1e-9, `cost=${item16.cost} 期望=${exp16}`);
+    check('日志记录了缓存命中 tokens（5）', item16.cacheTokens === 5, String(item16.cacheTokens));
+
+    // 2) 窗口移开 → 回到峰时价
+    await req('/api/settings', { method: 'PUT', token: T, body: { offPeak: { enabled: true, start: hm(bjMinNow + 120), end: hm(bjMinNow + 150) } } });
+    const r17 = await req('/v1/chat/completions', {
+      method: 'POST', token: e11.key,
+      body: { model: 'fake-model', messages: [{ role: 'user', content: '峰时核算' }] },
+    });
+    check('峰时时段可正常调用', r17.status === 200, `HTTP ${r17.status}`);
+    const log17 = await req('/api/logs?employeeId=' + e11.id + '&limit=1', { token: T });
+    const item17 = log17.data.items[0] || {};
+    const exp17 = ((111 - 5) * 10 + 5 * 2 + 222 * 40) / 1e6; // (106*10 + 5*2 + 222*40)/1e6
+    check('峰时时段按峰时单价 + 缓存命中价核算', Math.abs(item17.cost - exp17) < 1e-9, `cost=${item17.cost} 期望=${exp17}`);
+
+    // 3) 关闭闲时开关 → 即使配置了闲时价也不生效；设置可持久化
+    await req('/api/settings', { method: 'PUT', token: T, body: { offPeak: { enabled: false, start: hm(bjMinNow - 15), end: hm(bjMinNow + 15) } } });
+    const st17 = await req('/api/settings', { token: T });
+    check('闲时时段设置可保存（含开关关闭）', st17.data.offPeak && st17.data.offPeak.enabled === false && st17.data.offPeak.start === hm(bjMinNow - 15), JSON.stringify(st17.data.offPeak));
+    const prGet = await req('/api/pricing', { token: T });
+    check('单价接口返回闲时配置与实时时段状态', typeof prGet.data.nowOffPeak === 'boolean' && !!prGet.data.offPeak, JSON.stringify({ nowOffPeak: prGet.data.nowOffPeak, offPeak: prGet.data.offPeak }));
+    check('单价接口带出缓存命中与闲时单价', prGet.data.items['fake-model']?.offPeak?.in === 5 && prGet.data.items['fake-model']?.cacheIn === 2, JSON.stringify(prGet.data.items['fake-model']));
 
   } catch (e) {
     fail++;
