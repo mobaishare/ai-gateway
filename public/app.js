@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------- 基础工具
 
 // 与 package.json 的 version 保持一致（scripts/check-docs.js 会校验）
-const APP_VERSION = '1.6.5';
+const APP_VERSION = '1.6.6';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];

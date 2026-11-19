@@ -349,16 +349,35 @@ async function callUntilBlocked(key, maxCalls = 60) {
     check('员工用量已超过部门额度 400 仍能用', after3Emp > 400, String(after3Emp));
 
     // ============================================================
-    section('④ 占用部门池时，部门额度是第二道约束');
+    section('④ 特例优先：个人日额度生效后，部门池不再拦本人');
     const d4 = await mkDept('测试部-双重约束', { dailyTokens: 500, monthlyTokens: 0, rpm: 0, concurrency: 0 });
     const e4 = await mkEmp('测试员-占池', d4.id, {
       enabled: true, dailyTokens: 10_000_000, monthlyTokens: null, rpm: null, concurrency: null,
-      countAgainstDept: true, note: '个人额度大，但占部门池',
+      countAgainstDept: true, note: '个人额度大，占部门池',
     });
-    const err4 = await callUntilBlocked(e4.key);
-    check('个人额度充足时被部门池拦截', !!err4 && err4.type === 'quota_exceeded', JSON.stringify(err4));
-    check('拦截维度是 deptDailyTokens', err4?.dimension === 'deptDailyTokens', err4?.dimension);
-    check('拦截来源是 department', err4?.scope === 'department', err4?.scope);
+    let ok4 = 0;
+    let err4 = null;
+    for (let i = 0; i < 12; i++) {
+      const r = await req('/v1/chat/completions', {
+        method: 'POST', token: e4.key,
+        body: { model: 'gpt-4o-mini', messages: [{ role: 'user', content: '特例优先测试' + i }] },
+      });
+      if (r.status === 200) ok4++;
+      else err4 = r.data.error;
+    }
+    check('个人特例日额度生效后，超过部门池仍可继续调用', ok4 === 12 && !err4,
+      `${ok4}/12 ${err4 ? JSON.stringify(err4) : ''}`);
+    const dept4After = (await getDept(d4.id)).usage.dayTokens;
+    check('消耗仍计入部门池（影响部门其他成员）', dept4After > 500, String(dept4After));
+
+    // 特例没有覆盖日维度时，部门池仍然拦
+    const e4b = await mkEmp('测试员-继承部门', d4.id, {
+      enabled: true, dailyTokens: null, monthlyTokens: null, rpm: null, concurrency: null,
+      countAgainstDept: true, note: '没有覆盖日额度',
+    });
+    const err4b = await callUntilBlocked(e4b.key);
+    check('特例未覆盖日维度时，部门池照常拦截', !!err4b && err4b.dimension === 'deptDailyTokens', JSON.stringify(err4b));
+    check('拦截来源是 department', err4b?.scope === 'department', err4b?.scope);
 
     // ============================================================
     section('⑤ 特例过期后自动回落到部门额度');
