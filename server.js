@@ -33,24 +33,57 @@ const BOOT_AT = new Date().toISOString();
 
 // ---------------------------------------------------------------- 启动准备
 
-const db = store.load();
+let db = null;
 
-// 首次启动补一个签名密钥，用于签发管理员令牌
-if (!db.settings.secret) {
-  db.settings.secret = crypto.randomBytes(32).toString('hex');
+async function bootstrap() {
+  db = await store.init();   // 连 MySQL、建表、读全量（空库灌默认配置与参考价）
+
+  // 首次启动补一个签名密钥，用于签发管理员令牌
+  if (!db.settings.secret) {
+    db.settings.secret = crypto.randomBytes(32).toString('hex');
+  }
+
+  // 空库时灌一份演示数据，方便一打开就能看到界面效果。
+  // settings.seeded 用来防止「清空业务数据」后重启又把演示数据灌回来。
+  if (!db.settings.seeded && db.departments.length === 0 && db.employees.length === 0) {
+    require('./lib/seed').seed(db);
+    db.settings.seeded = true;
+    await store.syncNow();
+    console.log('[init] 已生成演示数据');
+  }
+
+  // 计数器依赖聚合表，必须放在 seed 之后重建
+  store.rebuildCounters();
+
+  server.listen(PORT, HOST, () => {
+    const line = '─'.repeat(56);
+    console.log(`\n${line}`);
+    console.log(`  ${db.settings.platformName}`);
+    console.log(`  管理台   http://localhost:${PORT}/`);
+    console.log(`  网关地址 http://localhost:${PORT}/v1`);
+    console.log(`  数据库   MySQL（${db.settings.presetsVersion ? '已就绪' : '已连接'}）`);
+    console.log(`  默认账号 admin / admin123  （请登录后立即修改）`);
+    console.log(`${line}\n`);
+  });
 }
 
-// 空库时灌一份演示数据，方便一打开就能看到界面效果。
-// settings.seeded 用来防止「清空业务数据」后重启又把演示数据灌回来。
-if (!db.settings.seeded && db.departments.length === 0 && db.employees.length === 0) {
-  require('./lib/seed').seed(db);
-  db.settings.seeded = true;
-  store.saveNow();
-  console.log('[init] 已生成演示数据');
-}
+bootstrap().catch((e) => {
+  console.error('\n[启动失败]', e.message);
+  console.error('提示：v1.7.0 起数据存储在 MySQL，请先建库并通过环境变量提供连接信息，');
+  console.error('例如：MYSQL_URL="mysql://root:密码@127.0.0.1:3306/ai_gateway"（库名不存在会自动建表，但库本身要先创建）。');
+  process.exit(1);
+});
 
-// 计数器依赖聚合表，必须放在 seed 之后重建
-store.rebuildCounters();
+// 退出前把内存数据写回 MySQL
+function shutdown(sig) {
+  console.log(`\n[server] 收到 ${sig}，正在写回 MySQL...`);
+  Promise.race([store.flush(), new Promise((r) => setTimeout(r, 3000))])
+    .then(() => store.closeDb())
+    .finally(() => process.exit(0));
+  setTimeout(() => process.exit(0), 4000).unref();
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // ---------------------------------------------------------------- 工具函数
 
@@ -889,7 +922,7 @@ async function handleApi(req, res, url) {
     const np = String(body.newPassword || '');
     if (np.length < 6) return fail(res, 400, '新密码至少 6 位');
     db.settings.adminPassHash = store.sha256(np);
-    store.saveNow();
+    await store.syncNow();
     return json(res, 200, { ok: true });
   }
 
@@ -931,11 +964,18 @@ async function handleApi(req, res, url) {
 
   // ---------------- 清空业务数据（保留上游渠道与设置）
   if (p === '/api/reset-data' && method === 'POST') {
-    store.saveNow();
+    await store.syncNow();
     let backup = '';
     try {
+      // 清空前把内存态导出成 JSON 快照（脱敏后即 /api/export 的完整版），方便误操作恢复
+      if (!fs.existsSync(store.DATA_DIR)) fs.mkdirSync(store.DATA_DIR, { recursive: true });
       const bak = path.join(store.DATA_DIR, `db-backup-${Date.now()}.json`);
-      fs.copyFileSync(store.DB_FILE, bak);
+      const snap = JSON.parse(JSON.stringify(db));
+      snap.settings = { ...snap.settings };
+      delete snap.settings.secret;
+      snap.providers = (snap.providers || []).map((x) => ({ ...x, apiKey: '' }));
+      snap.employees = (snap.employees || []).map((x) => ({ ...x, key: '' }));
+      fs.writeFileSync(bak, JSON.stringify(snap));
       backup = path.relative(path.join(__dirname), bak);
     } catch { /* 备份失败不阻塞清空 */ }
     db.departments = [];
@@ -950,7 +990,7 @@ async function handleApi(req, res, url) {
     // 清空之后不允许重启再灌演示数据
     db.settings.seeded = true;
     store.rebuildCounters();
-    store.saveNow();
+    await store.syncNow();
     return json(res, 200, { ok: true, backup });
   }
 
@@ -1193,11 +1233,18 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (url.pathname === '/healthz') {
+      let dbOk = false;
+      try {
+        await require('./lib/db-mysql').getPool().query('SELECT 1');
+        dbOk = true;
+      } catch { dbOk = false; }
       return json(res, 200, {
         ok: true,
         version: pkg.version,
         startedAt: BOOT_AT,
         uptime: Math.round(process.uptime()),
+        storage: 'mysql',
+        dbOk,
         ts: new Date().toISOString(),
       });
     }
@@ -1210,23 +1257,3 @@ const server = http.createServer(async (req, res) => {
     try { res.end(); } catch { /* ignore */ }
   }
 });
-
-server.listen(PORT, HOST, () => {
-  const line = '─'.repeat(56);
-  console.log(`\n${line}`);
-  console.log(`  ${db.settings.platformName}`);
-  console.log(`  管理台   http://localhost:${PORT}/`);
-  console.log(`  网关地址 http://localhost:${PORT}/v1`);
-  console.log(`  默认账号 admin / admin123  （请登录后立即修改）`);
-  console.log(`${line}\n`);
-});
-
-// 退出前把内存数据刷盘
-function shutdown(sig) {
-  console.log(`\n[server] 收到 ${sig}，正在保存数据...`);
-  store.saveNow();
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 2000).unref();
-}
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));

@@ -7,7 +7,7 @@
 公司内部用的 AI 接口网关。**员工拿不到上游真实密钥**，每人一个平台签发的虚拟 Key，
 按「部门 → 员工」两层分配用量额度，员工个人的特殊额度优先于部门默认值。
 
-零外部依赖，`node server.js` 就能跑，数据存单个 JSON 文件，内网部署和备份都很省事。
+数据存 **MySQL**（v1.7.0 起，用量明细按人 / 部门 / 模型 / 时间建列并索引，外部 BI 可以直接做 SQL 分析），代码本身只有一个 npm 依赖 `mysql2`。
 
 **核心能力**：四维度配额（日/月 Token、RPM、并发）· 逐字段特例继承 ·
 模型白名单（部门默认 + 个人覆盖）· **成本核算看板**（按模型单价折算 ¥，
@@ -22,16 +22,24 @@
 ## 先跑起来
 
 ```bash
-cd ai-gateway
-node server.js
+# 1. 装依赖（只有 mysql2 一个）
+npm install
+
+# 2. 建 MySQL 库（应用自己建表，只需保证库存在）
+mysql -uroot -p -e "CREATE DATABASE IF NOT EXISTS ai_gateway DEFAULT CHARSET utf8mb4"
+
+# 3. 配置连接并启动
+MYSQL_URL="mysql://root:密码@127.0.0.1:3306/ai_gateway" node server.js
 ```
 
 - 管理台：<http://localhost:8787/>
 - 网关地址：`http://localhost:8787/v1`
 - 默认账号：`admin` / `admin123`（登录后请立刻在「系统设置」里改掉）
 
-首次启动会自动生成一份演示数据（4 个部门、7 名员工、3 个示例渠道），
+首次启动会自动建表并生成一份演示数据（4 个部门、7 名员工、3 个示例渠道），
 所有渠道默认停用，此时网关返回**内置模拟响应**——不用真实 Key 就能把整个配额流程跑通。
+
+连接配置支持 `MYSQL_URL` 整串，或分项 `MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE`。
 
 改成自定义端口：`PORT=9000 node server.js`
 
@@ -41,14 +49,15 @@ node server.js
 docker build -t ai-gateway .
 docker run -d --name ai-gateway \
   -p 8787:8787 \
+  -e MYSQL_URL="mysql://root:密码@mysql:3306/ai_gateway" \
   -v ai-gateway-data:/app/data \
   --restart unless-stopped \
   ai-gateway
 ```
 
-数据（`db.json` 与备份）全部在 `ai-gateway-data` 卷里，升级镜像不丢数据。
+数据在 MySQL 里，升级镜像不丢数据；`/app/data` 卷放清空操作自动生成的备份快照。
 
-> 当前版本 **v1.6.6**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+> 当前版本 **v1.7.0**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > **文档**（全部在 [`docs/`](docs/README.md)，含文档维护规则）：
 > - 📘 [操作手册](docs/操作手册.md) —— 管理员日常操作全流程、各页面字段说明、FAQ
@@ -268,7 +277,7 @@ resp = client.chat.completions.create(
 正式启用前想抹掉演示数据：**系统设置 → 数据管理 → 清空业务数据**。
 
 会清空部门、员工、调用日志与统计，**保留上游渠道与模型配置、平台设置**；
-清空前自动在 `data/` 下生成 `db-backup-<时间戳>.json` 完整备份。
+清空前自动在 `data/` 下生成 `db-backup-<时间戳>.json` 备份快照（不含密钥）。
 清空后重启也不会再把演示数据灌回来（`settings.seeded` 标记已置位）。
 
 ---
@@ -292,10 +301,10 @@ ai-gateway/
 │   ├── app.js
 │   └── style.css
 ├── docs/                # 手册：操作 / 计费 / 告警运维 / API / 插件开发
-├── test/run.js          # 端到端测试（133 项）
+├── test/run.js          # 端到端测试（148 项）
 ├── .github/workflows/ci.yml  # CI：语法检查 + 端到端测试
 ├── Dockerfile           # node:20-alpine + HEALTHCHECK + VOLUME /app/data
-└── data/db.json         # 运行时生成，备份直接拷这个文件
+└── data/                # 清空业务数据时自动生成的备份快照（数据本体在 MySQL）
 ```
 
 ---
@@ -352,8 +361,13 @@ ai-gateway/
 node test/run.js
 ```
 
-会用临时数据目录和独立端口起一个实例，跑完自动清理，不碰 `data/db.json`，
-CI 每次 push 也会跑同一套。覆盖 **133 项**检查，包括：
+会用独立端口 + 独立 MySQL 测试库起一个实例（表先清空，别指向生产库）：
+
+```bash
+GW_TEST_MYSQL_URL="mysql://root:密码@127.0.0.1:3306/ai_gateway_test" node test/run.js
+```
+
+CI 每次 push 也会跑同一套。覆盖 **148 项**检查，包括：
 
 - 员工特例优先于部门、且可以比部门更宽松
 - 逐字段继承（只覆盖 RPM，其余仍继承部门）
@@ -390,6 +404,7 @@ Type=simple
 WorkingDirectory=/opt/ai-gateway
 ExecStart=/usr/bin/node server.js
 Environment=PORT=8787
+Environment=MYSQL_URL=mysql://ai_gateway:密码@127.0.0.1:3306/ai_gateway
 Restart=always
 User=www-data
 
@@ -422,8 +437,9 @@ location / {
 
 ## 几个需要注意的点
 
-**数据备份**：所有配置和用量都在 `data/db.json`，直接复制就是完整备份。
-用量明细保留最近 5000 条，长期统计（日报/月报）存在聚合表里，保留 120 天。
+**数据备份**：所有配置和用量都在 MySQL（库级备份用 `mysqldump`，如
+`mysqldump ai_gateway > backup.sql`）。用量明细保留最近 5000 条，长期统计（日报/月报）
+存在聚合表里，保留 120 天；明细按人/部门/模型/时间建了索引，外部 BI 可直接 SQL 分析。
 
 **虚拟 Key 的存储**：为了管理员随时能把 Key 发给员工，Key 在服务端是明文存的
 （界面上默认打码显示）。如果你们的安全要求更高，可以改成只存哈希、创建时展示一次，

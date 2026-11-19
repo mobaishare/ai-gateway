@@ -1,6 +1,6 @@
 # API 参考
 
-> 适用版本：**v1.6.6**。管理接口用于二次开发/批量运维，网关接口给员工程序调用。
+> 适用版本：**v1.7.0**。管理接口用于二次开发/批量运维，网关接口给员工程序调用。
 >
 > 手册索引见 [docs/README](README.md)。
 
@@ -16,7 +16,7 @@
 | 网关 API | `/v1/*` | `Authorization: Bearer <员工虚拟 Key，sk-ai- 开头>` |
 | 健康检查 | `/healthz` | 无 |
 
-令牌不是 JWT，形如 `<base64url(user|exp)>.<hmac>`，服务重启后依然有效（密钥存在 `db.json` 的 `settings.secret`），改密码不会让旧令牌立即失效——需要强制下线请换 `settings.secret`。
+令牌不是 JWT，形如 `<base64url(user|exp)>.<hmac>`，服务重启后依然有效（签名密钥存在数据库 `settings.secret`），改密码不会让旧令牌立即失效——需要强制下线请换 `settings.secret`。
 
 ### 1.2 响应与错误
 
@@ -389,7 +389,7 @@ TOKEN=$(curl -s -X POST localhost:8787/api/login \
   - 只传 `{retry: {enabled: false}}` 这类局部字段时，其余子字段保持原值。
 - `peak`：**全局高峰规则，默认 `enabled: false`**。分时计价默认由每个模型的 `pricing[model].periods` 决定（见 2.7），这里只在「模型填了 `idle`、没配 `periods`」时才有意义；`days` 用 0–6（0=周日），`windows` 最多两项且支持跨零点，`holidays` 为 `YYYY-MM-DD`。
 - 只传 `{peak: {enabled: true}}` 这类局部字段时，其余字段保持原值。
-- `maxBodyBytes` 不在可改字段内，需改 `db.json`。
+- `maxBodyBytes` 不在可改字段内，需直接改数据库 `kv` 表的 `settings`（需停服）。
 
 ### 2.9 插件
 
@@ -426,7 +426,7 @@ TOKEN=$(curl -s -X POST localhost:8787/api/login \
 - `target`：`employee` / `department` / `global`（系统设置里点「发送测试消息」时记一条 `target=global`、`targetName=全局默认` 的记录）；`channel`：`employee` / `department` / `global`，即这条实际走的是哪一级通道。
 - `test:true` 表示由「发送测试消息」触发（`threshold` 为 0、`percent` 为 0）。
 - `routes` 只列**已单独配置**告警的对象及其域名（Webhook 已打码为 `域名/…`），供设置页展示「谁有自己的通道」。
-- 记录最多保留 200 条（`ALERT_LOG_LIMIT`），随 `db.json` 落盘。
+- 记录最多保留 200 条（`ALERT_LOG_LIMIT`），随平台数据落库。
 
 ### 2.11 数据管理
 
@@ -520,7 +520,21 @@ TOKEN=$(curl -s -X POST localhost:8787/api/login \
 
 ---
 
-## 5. 数据结构（db.json 摘要）
+## 5. 数据结构（MySQL 存储摘要）
+
+v1.7.0 起数据存 MySQL，表结构如下（建表由应用启动时自动完成）：
+
+| 表 | 内容 | 说明 |
+| --- | --- | --- |
+| `kv` | `settings` / `plugins` / `stats_alerts` / `alert_log` / `meta` | 单对象键值表，`v` 为 JSON |
+| `departments` | 部门 | `id` 主键，`data` 为完整 JSON |
+| `employees` | 员工 | 同上（虚拟 Key 在 `data.key`） |
+| `providers` | 上游渠道 | 同上 |
+| `pricing` | 模型单价 | `model` 主键，`data` 为定价 JSON |
+| `stats_daily` | 日聚合 | `d`（日期）主键，`data` = `{emp, dept, models}` |
+| `usage_log` | 调用明细 | 最近 5000 条滚动；`ts/employee_id/dept_id/model/provider_id/tokens/cost/status/usage_source` 抽成列并建索引（外部 BI 可直接查询），正文与成本拆解在 `data` JSON |
+
+上面 JSON 结构描述各对象字段（与表内 `data` 列内容一致）：
 
 ```json
 {

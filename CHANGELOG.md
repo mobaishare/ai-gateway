@@ -1,5 +1,31 @@
 # 版本记录
 
+## v1.7.0（2026-11-19）
+
+**存储层从单文件 `db.json` 迁到 MySQL**。动机：JSON 全量重写不适合增长与并发，且无法用 SQL 做用量分析。这是 breaking change：v1.7.0 起不再读取 JSON 文件，部署需要 MySQL（详见「升级」一节）。
+
+### 新增
+
+- 存储后端 MySQL：`kv`（settings/plugins/告警状态）、`departments`、`employees`、`providers`、`pricing`、`stats_daily`、`usage_log` 七张表，启动时自动建表，空库自动灌默认配置与 8 家厂商参考价。
+- 调用明细表 `usage_log` 把 `ts / employee_id / dept_id / model / provider_id / tokens / cost / status / usage_source` 抽成列并建索引——外部 BI 与 SQL 客户端可以直接做用量分析，不再需要先把 JSON 导出加工。
+- 连接配置环境变量：`MYSQL_URL` 整串，或 `MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE` 分项；连接失败时启动报错并给出配置指引。
+- `/healthz` 新增 `storage: "mysql"` 与 `dbOk`（实时探测数据库连通）。
+- 「清空业务数据」的备份从复制 JSON 文件改为导出脱敏 JSON 快照到 `data/db-backup-<时间戳>.json`。
+
+### 架构说明
+
+- **业务逻辑仍以进程内存为权威**（RPM/并发计数器本来就在内存，单实例设计与 v1.6 一致），`store.save()` 防抖 400ms 后写入 MySQL：小表事务内全量重写（几十行，毫秒级），明细表增量插入并滚动淘汰旧行。多实例仍不支持（会互相覆盖）。
+- 唯一 npm 依赖：`mysql2`。「零依赖、解压即用」的部署形态随之改变，Dockerfile 已更新（`npm ci --omit=dev`）。
+
+### 升级
+
+- v1.6.x 的 `db.json` 不会被自动迁移（选择空库起步）。要保留旧数据：按 API 参考 §5 的表清单手工导入（每行 `data` 列即 JSON 原文）；组织架构量少时更简单的路径是——用飞书/企微/CSV 插件重新同步、单价点「载入官方参考价」，历史用量从空开始。
+- 升级动作：建库 → `npm install` → 配置 `MYSQL_URL` → 启动。
+
+### 测试
+
+- 端到端 148 项在 MySQL 后端上运行：测试先清空指定库的表再起实例，通过 `GW_TEST_MYSQL_URL` 指定（不指向生产库）。
+
 ## v1.6.6（2026-11-19）
 
 ### 修复

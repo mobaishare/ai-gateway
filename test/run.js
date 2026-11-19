@@ -3,10 +3,11 @@
 /**
  * 端到端测试：验证平台的配额规则
  *
- * 用独立的临时数据目录 + 独立端口启动一个实例，跑完自动清理，
- * 不会污染 data/db.json 里的演示数据。
+ * v1.7.0 起存储后端是 MySQL：测试前先清空指定库的表（不 DROP 库），
+ * 用独立端口启动实例，跑完自动清理临时目录。
  *
- * 运行：node test/run.js
+ * 运行：GW_TEST_MYSQL_URL="mysql://root:密码@127.0.0.1:3306/ai_gateway_test" node test/run.js
+ * （不设置时回退读 MYSQL_URL；两者都没有则直接失败并给出指引）
  */
 
 const { spawn } = require('child_process');
@@ -17,6 +18,14 @@ const path = require('path');
 const PORT = 8799;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'gw-test-'));
+
+const TEST_DB_URL = process.env.GW_TEST_MYSQL_URL || process.env.MYSQL_URL || '';
+if (!TEST_DB_URL) {
+  console.error('\n[测试] 需要 MySQL 连接串。请设置环境变量后重跑，例如：');
+  console.error('  GW_TEST_MYSQL_URL="mysql://root:密码@127.0.0.1:3306/ai_gateway_test" node test/run.js');
+  console.error('说明：表会在测试开始前被清空，请给测试单独建一个库，不要指向生产库。\n');
+  process.exit(1);
+}
 
 let pass = 0;
 let fail = 0;
@@ -192,11 +201,21 @@ async function callUntilBlocked(key, maxCalls = 60) {
 
 (async function main() {
   console.log('\x1b[1m\nAI API 分流平台 · 端到端测试\x1b[0m');
+  console.log(`数据库：${TEST_DB_URL.replace(/:\/\/([^:]+):[^@]*@/, '://$1:***@')}`);
   console.log(`数据目录：${DATA_DIR}\n端口：${PORT}\n`);
+
+  // 测试开始前清空指定库的全部业务表（表结构由被测实例自行建）
+  const mysql = require('mysql2/promise');
+  const dbConn = await mysql.createConnection(TEST_DB_URL);
+  for (const t of ['kv', 'departments', 'employees', 'providers', 'pricing', 'stats_daily', 'usage_log']) {
+    await dbConn.query(`DROP TABLE IF EXISTS ${t}`);
+  }
+  await dbConn.end();
+  console.log('[测试] 已清空测试库全部表\n');
 
   const proc = spawn(process.execPath, ['server.js'], {
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, PORT: String(PORT), GW_DATA_DIR: DATA_DIR },
+    env: { ...process.env, PORT: String(PORT), GW_DATA_DIR: DATA_DIR, MYSQL_URL: TEST_DB_URL },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

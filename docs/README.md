@@ -1,6 +1,6 @@
 # 文档索引与维护规则
 
-> 适用版本：**v1.6.6**（对应代码见仓库 tag，版本历史见 [CHANGELOG.md](../CHANGELOG.md)）
+> 适用版本：**v1.7.0**（对应代码见仓库 tag，版本历史见 [CHANGELOG.md](../CHANGELOG.md)）
 
 ## 1. 文档地图
 
@@ -34,6 +34,7 @@ CI 的「文档一致性检查」步骤跑的就是它，**版本号没同步或
 | 新增/修改管理台页面、按钮、表单项 | 操作手册 | 第 3 章对应小节 |
 | 配额维度、继承规则、判定顺序 | 操作手册 + README | 「额度规则」「判定顺序」 |
 | 计价字段（in/out/cacheIn/cacheWrite/idle/tiers/periods/perCall/multiplier/formula/note） | 计费与成本核算 + 操作手册 3.4.1 | 数据结构表、算例、单价表字段说明 |
+| 存储层（MySQL 表结构、连接环境变量、备份恢复） | 告警与运维手册 + API 参考 §5 | 建库 SQL、表清单、mysqldump |
 | 分时规则（默认走模型级 `periods`；全局 `settings.peak` 默认关闭，仅作兜底） | 计费与成本核算 §3.6 / §4 + 操作手册 3.4.1 | 规则说明、算例、优先级、旧库迁移 |
 | 内置参考价（`lib/preset-prices.js`） | 计费与成本核算 | 第 5 章价格表（含 `updatedAt`） |
 | 调用日志的留存字段、截断策略（`settings.logContent` / `logContentMax`） | 操作手册 3.5 + API 参考 2.6 + 告警手册 | 日志章节、`usage.log` 结构 |
