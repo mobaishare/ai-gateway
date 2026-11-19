@@ -486,6 +486,7 @@ async function handleApi(req, res, url) {
     if (action === 'rotate' && method === 'POST') {
       emp.key = store.genKey();
       emp.updatedAt = new Date().toISOString();
+      store.reindex(); // 原地改了 key：立即刷新索引，避免新 key 在 save 防抖窗口内鉴权失败
       store.save();
       return json(res, 200, { key: emp.key });
     }

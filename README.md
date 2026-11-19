@@ -39,7 +39,7 @@ MYSQL_URL="mysql://root:密码@127.0.0.1:3306/ai_gateway" node server.js
 首次启动会自动建表并生成一份演示数据（4 个部门、7 名员工、3 个示例渠道），
 所有渠道默认停用，此时网关返回**内置模拟响应**——不用真实 Key 就能把整个配额流程跑通。
 
-连接配置支持 `MYSQL_URL` 整串，或分项 `MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE`。
+连接配置支持 `MYSQL_URL` 整串，或分项 `MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE`。连接池大小用 `MYSQL_POOL_SIZE` 调（默认 10）。
 
 改成自定义端口：`PORT=9000 node server.js`
 
@@ -57,7 +57,7 @@ docker run -d --name ai-gateway \
 
 数据在 MySQL 里，升级镜像不丢数据；`/app/data` 卷放清空操作自动生成的备份快照。
 
-> 当前版本 **v1.7.0**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+> 当前版本 **v1.7.1**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > **文档**（全部在 [`docs/`](docs/README.md)，含文档维护规则）：
 > - 📘 [操作手册](docs/操作手册.md) —— 管理员日常操作全流程、各页面字段说明、FAQ
