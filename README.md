@@ -28,8 +28,12 @@ npm install
 # 2. 建 MySQL 库（应用自己建表，只需保证库存在）
 mysql -uroot -p -e "CREATE DATABASE IF NOT EXISTS ai_gateway DEFAULT CHARSET utf8mb4"
 
-# 3. 配置连接并启动
-MYSQL_URL="mysql://root:密码@127.0.0.1:3306/ai_gateway" node server.js
+# 3. 复制配置模板并填写连接信息（文件不会进 Git）
+cp .env.example .env
+# 编辑 .env，把 MYSQL_URL 改成你的库；或按注释填分项变量
+
+# 4. 启动（v1.7.4 起会自动读取 .env，不用再手动 export）
+npm start
 ```
 
 - 管理台：<http://localhost:8787/>
@@ -39,9 +43,9 @@ MYSQL_URL="mysql://root:密码@127.0.0.1:3306/ai_gateway" node server.js
 首次启动会自动建表并生成一份演示数据（4 个部门、7 名员工、3 个示例渠道），
 所有渠道默认停用，此时网关返回**内置模拟响应**——不用真实 Key 就能把整个配额流程跑通。
 
-连接配置支持 `MYSQL_URL` 整串，或分项 `MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE`。连接池大小用 `MYSQL_POOL_SIZE` 调（默认 10）。
+**配置优先级**：项目根目录的 `.env` 文件会被自动读取（v1.7.4 起），但**已存在的环境变量优先于文件**——所以 `PORT=9000 npm start` 或 systemd/Docker 里设的变量会覆盖 `.env`。连接串支持 `MYSQL_URL` 整串，或分项 `MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE`。连接池大小用 `MYSQL_POOL_SIZE` 调（默认 10）。
 
-改成自定义端口：`PORT=9000 node server.js`
+> 用 systemd / Docker 部署时也可以不建 `.env`，直接在服务单元或 `-e` 里传环境变量（见下文）；两种方式二选一即可。
 
 ### Docker 部署
 
@@ -57,7 +61,7 @@ docker run -d --name ai-gateway \
 
 数据在 MySQL 里，升级镜像不丢数据；`/app/data` 卷放清空操作自动生成的备份快照。
 
-> 当前版本 **v1.7.3**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+> 当前版本 **v1.7.4**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > **文档**（全部在 [`docs/`](docs/README.md)，含文档维护规则）：
 > - 📘 [操作手册](docs/操作手册.md) —— 管理员日常操作全流程、各页面字段说明、FAQ

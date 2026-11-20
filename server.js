@@ -16,6 +16,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// 先加载 .env（v1.7.4）：改完文件直接 npm start 即可，环境变量仍优先
+require('./lib/env').load();
+
 const store = require('./lib/store');
 const quota = require('./lib/quota');
 const proxy = require('./lib/proxy');
