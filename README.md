@@ -57,7 +57,7 @@ docker run -d --name ai-gateway \
 
 数据在 MySQL 里，升级镜像不丢数据；`/app/data` 卷放清空操作自动生成的备份快照。
 
-> 当前版本 **v1.7.2**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+> 当前版本 **v1.7.3**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > **文档**（全部在 [`docs/`](docs/README.md)，含文档维护规则）：
 > - 📘 [操作手册](docs/操作手册.md) —— 管理员日常操作全流程、各页面字段说明、FAQ
@@ -301,7 +301,7 @@ ai-gateway/
 │   ├── app.js
 │   └── style.css
 ├── docs/                # 手册：操作 / 计费 / 告警运维 / API / 插件开发
-├── test/run.js          # 端到端测试（148 项）
+├── test/run.js          # 端到端测试（153 项）
 ├── .github/workflows/ci.yml  # CI：语法检查 + 端到端测试
 ├── Dockerfile           # node:20-alpine + HEALTHCHECK + VOLUME /app/data
 └── data/                # 清空业务数据时自动生成的备份快照（数据本体在 MySQL）
@@ -367,7 +367,7 @@ node test/run.js
 GW_TEST_MYSQL_URL="mysql://root:密码@127.0.0.1:3306/ai_gateway_test" node test/run.js
 ```
 
-CI 每次 push 也会跑同一套。覆盖 **148 项**检查，包括：
+CI 每次 push 也会跑同一套（自带一次性 MySQL 8.0 容器）。覆盖 **153 项**检查，包括：
 
 - 员工特例优先于部门、且可以比部门更宽松
 - 逐字段继承（只覆盖 RPM，其余仍继承部门）

@@ -8,12 +8,31 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # 测试需要真实 MySQL，用一次性服务容器，不依赖外部凭据也不碰生产库
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci_test_only
+          MYSQL_DATABASE: ai_gateway_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci_test_only"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      GW_TEST_MYSQL_URL: mysql://root:ci_test_only@127.0.0.1:3306/ai_gateway_test
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: 语法检查
         run: |
