@@ -57,7 +57,7 @@ docker run -d --name ai-gateway \
 
 数据在 MySQL 里，升级镜像不丢数据；`/app/data` 卷放清空操作自动生成的备份快照。
 
-> 当前版本 **v1.7.1**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+> 当前版本 **v1.7.2**，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > **文档**（全部在 [`docs/`](docs/README.md)，含文档维护规则）：
 > - 📘 [操作手册](docs/操作手册.md) —— 管理员日常操作全流程、各页面字段说明、FAQ

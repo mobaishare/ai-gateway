@@ -220,7 +220,10 @@ async function callUntilBlocked(key, maxCalls = 60) {
   });
 
   let serverErr = '';
+  let serverOut = '';
   proc.stderr.on('data', (d) => { serverErr += d.toString(); });
+  // 落库失败打在 stdout（console.log），以前只听 stderr 会静默漏掉「接口全过但数据没写进去」
+  proc.stdout.on('data', (d) => { serverOut += d.toString(); });
 
   // 两个假上游：一个正常，一个永远 500（用来验证故障切换）
   const upstreamOK = await startFakeUpstream(8798, { tag: 'OK' });
@@ -1138,6 +1141,26 @@ async function callUntilBlocked(key, maxCalls = 60) {
 
     // 收尾：恢复默认（全局规则关闭），避免影响后续
     await req('/api/settings', { method: 'PUT', token: T, body: { peak: { ...peakWin, enabled: false } } });
+
+    // ============================================================
+    section('⑳ 落库正确性：接口成功之外，数据必须真的写进 MySQL');
+    await sleep(900); // 等 400ms 防抖 + 一轮同步完成
+    const vc = await mysql.createConnection(TEST_DB_URL);
+    try {
+      const [kvRows] = await vc.query('SELECT COUNT(*) AS n FROM kv');
+      const [priceRows] = await vc.query('SELECT COUNT(*) AS n FROM pricing');
+      const [dailyRows] = await vc.query('SELECT COUNT(*) AS n FROM stats_daily');
+      const [logRows] = await vc.query('SELECT COUNT(*) AS n FROM usage_log');
+      check('kv 设置已落库', kvRows[0].n > 0, String(kvRows[0].n));
+      check('pricing 已落库（model 主键列正确）', priceRows[0].n > 0, String(priceRows[0].n));
+      check('stats_daily 已落库（d 主键列正确）', dailyRows[0].n > 0, String(dailyRows[0].n));
+      check('usage_log 明细已落库', logRows[0].n > 0, String(logRows[0].n));
+    } finally {
+      await vc.end();
+    }
+    const syncErrors = serverOut.match(/\[store\] MySQL 同步失败[^\n]*/g) || [];
+    check('服务端无 MySQL 同步失败', syncErrors.length === 0,
+      syncErrors.slice(0, 2).join(' | '));
 
   } catch (e) {
     fail++;

@@ -1,6 +1,6 @@
 # 文档索引与维护规则
 
-> 适用版本：**v1.7.1**（对应代码见仓库 tag，版本历史见 [CHANGELOG.md](../CHANGELOG.md)）
+> 适用版本：**v1.7.2**（对应代码见仓库 tag，版本历史见 [CHANGELOG.md](../CHANGELOG.md)）
 
 ## 1. 文档地图
 
