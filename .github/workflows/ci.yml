@@ -34,6 +34,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+
       - name: 语法检查
         run: |
           for f in server.js lib/*.js public/app.js scripts/*.js; do

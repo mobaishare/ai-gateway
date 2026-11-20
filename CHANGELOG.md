@@ -7,6 +7,7 @@
 ### 修复
 
 - **CI 端到端测试必红**：`.github/workflows/ci.yml` 未设置 `GW_TEST_MYSQL_URL`，测试启动即退出 1（语法检查与文档检查其实都是通过的）。现在 CI 自带一次性的 MySQL 8.0 服务容器（含健康检查），测试通过容器内网络连库，既有真实 MySQL 又不依赖外部凭据、不碰生产库。
+- **CI 缺依赖安装**：迁 MySQL 后测试代码 `require('mysql2/promise')`，但工作流从未跑 `npm install`，导致 `MODULE_NOT_FOUND`。现在在语法检查前先 `npm install --no-audit --no-fund`。
 - CI 的 `node-version` 从 20 对齐到项目声明的 Node 22。
 - 文档里遗留的旧测试数量（148 / 133 项）统一更正为 153 项。
 
