@@ -1,6 +1,6 @@
 # API 参考
 
-> 适用版本：**v1.7.4**。管理接口用于二次开发/批量运维，网关接口给员工程序调用。
+> 适用版本：**v1.7.6**。管理接口用于二次开发/批量运维，网关接口给员工程序调用。
 >
 > 手册索引见 [docs/README](README.md)。
 
@@ -399,6 +399,12 @@ TOKEN=$(curl -s -X POST localhost:8787/api/login \
 | PUT | `/api/plugins/:id/config` | 保存配置 `{config:{...}}` |
 | POST | `/api/plugins/:id/test` | 连接测试 `{config?}` → `{ok,message,...}` |
 | POST | `/api/plugins/:id/sync` | 拉取并合并 `{config?}`；失败返回 400 |
+
+内置插件 id：`feishu`（飞书）、`wecom`（企微）、`csv`（文本导入）、`api`（HTTP API 同步，v1.7.6）。`/api/plugins` 返回的每项带 `fields`（表单字段声明，含 `text`/`password`/`textarea`/`select`）、`config`、`configured`、`lastSyncAt`、`lastResult`。
+
+`POST /api/plugins/:id/sync` 成功响应除 `message` 外还返回计数：`deptsSeen/empsSeen`、`deptsCreated/empsCreated/empsUpdated`，全量镜像模式下另有 `deptsDeleted/empsDeleted`（插件通过 `syncOptions()` 声明 `deleteMissing: true` 时生效；只删带 `plugin:<id>` 来源标记的数据）。
+
+`api` 插件的 `config` 字段：`apiBase`（根地址）、`deptPath` / `empPath`（接口路径，至少一个）、`authHeader`（默认 `X-API-Key`；填 `Authorization` 时用 `Bearer`）、`apiKey`、`syncMode`（`merge` 默认 / `full`）。
 
 ### 2.10 告警记录
 

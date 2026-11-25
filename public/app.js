@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------- 基础工具
 
 // 与 package.json 的 version 保持一致（scripts/check-docs.js 会校验）
-const APP_VERSION = '1.7.4';
+const APP_VERSION = '1.7.6';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -24,7 +24,7 @@ const state = {
   settings: null,
   plugins: [],
   pluginId: '',
-  filters: { empKeyword: '', empDept: '', logStatus: '', logQ: '' },
+  filters: { empKeyword: '', empDept: '', logStatus: '', logQ: '', logModel: '', logEmp: '', logDept: '', logLimit: 100 },
 };
 
 const ICON = {
@@ -86,7 +86,7 @@ function toast(msg, type = '') {
 }
 
 function barClass(p) {
-  if (p >= 100) return 'danger';
+  if (p >= 100) return 'danger over';
   if (p >= 80) return 'warn';
   return '';
 }
@@ -97,12 +97,25 @@ function barWidth(percent, unlimited) {
   return Math.max(2, Math.min(100, percent));
 }
 
-/** 成本展示：¥ + 最多 4 位小数 */
+/** 成本展示：统一 4 位小数 + 千分位，列对齐、对账不跳动 */
 function costText(c) {
   const v = Number(c) || 0;
-  if (v === 0) return '¥0';
-  const s = v.toFixed(Math.abs(v) < 100 ? 4 : 2).replace(/0+$/, '').replace(/\.$/, '');
-  return '¥' + s;
+  if (v === 0) return '¥0.0000';
+  const fixed = v.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  const [intPart, decPart] = fixed.split('.');
+  const grouped = Number(intPart).toLocaleString('en-US');
+  return '¥' + grouped + (decPart ? '.' + decPart : '');
+}
+
+/** 耗时：毫秒 / 秒自适应，避免 12345 ms 难读 */
+function fmtLatency(ms) {
+  const v = Number(ms) || 0;
+  return v >= 1000 ? (v / 1000).toFixed(2) + ' s' : v + ' ms';
+}
+
+/** 统一状态用语：成功 / 配额拦截 / 失败 */
+function statusLabel(status) {
+  return status === 'ok' ? '成功' : (status === 'rejected' ? '配额拦截' : '失败');
 }
 
 // ---------------------------------------------------------------- 请求封装
@@ -255,6 +268,8 @@ function buildNav() {
 
 function navigate(key, sub) {
   if (!ROUTES.some((r) => r.key === key)) key = 'dashboard';
+  $('.sidebar')?.classList.remove('open');
+  $('#nav-mask')?.classList.remove('open');
   state.view = key;
   // 二级视图：目前只有插件页有（#/plugins/<插件id>）
   if (sub !== undefined) state.pluginId = sub;
@@ -285,17 +300,67 @@ function navigate(key, sub) {
 
 // ---------------------------------------------------------------- 概览页
 
+/** 近 7 日趋势：token 柱状 + 成本折线的组合图（纯 SVG，无外部依赖） */
+function trendChartHtml(trend, todayKey) {
+  const W = 560, H = 190, PAD_L = 8, PAD_R = 8, PAD_T = 24, PAD_B = 28;
+  const plotH = H - PAD_T - PAD_B;
+  const plotW = W - PAD_L - PAD_R;
+  const n = trend.length || 1;
+  const maxTok = Math.max(1, ...trend.map((t) => t.tokens));
+  const maxCost = Math.max(0.0001, ...trend.map((t) => t.cost || 0));
+  const slot = plotW / n;
+  const barW = Math.min(46, slot * 0.5);
+  const cx = (i) => PAD_L + slot * (i + 0.5);
+  const costY = (c) => PAD_T + plotH - ((c || 0) / maxCost) * (plotH - 12);
+  const pts = trend.map((t, i) => `${cx(i)},${costY(t.cost)}`).join(' ');
+  const bars = trend.map((t, i) => {
+    const h = Math.max(2, (t.tokens / maxTok) * plotH);
+    const isToday = t.date === todayKey;
+    const d = new Date(t.date + 'T00:00:00');
+    return `<g>
+      <rect x="${cx(i) - barW / 2}" y="${PAD_T + plotH - h}" width="${barW}" height="${h}" rx="4"
+        fill="${isToday ? '#7fa8ff' : '#c9dcff'}" />
+      <text x="${cx(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="${isToday ? 'var(--brand)' : 'var(--muted)'}">${isToday ? '今天' : (d.getMonth() + 1) + '/' + d.getDate()}</text>
+      <title>${t.date}　${fmt(t.tokens)} tokens / ${fmt(t.reqs)} 次 / ${costText(t.cost || 0)}</title>
+    </g>`;
+  }).join('');
+  const dots = trend.map((t, i) => `<circle cx="${cx(i)}" cy="${costY(t.cost)}" r="3.5" fill="#fff" stroke="#de7802" stroke-width="2"><title>${t.date} 成本 ${costText(t.cost || 0)}</title></circle>`).join('');
+
+  return `
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>近 7 日用量趋势</h3>
+          <div class="sub">柱：Token 消耗 · 线：成本（¥）</div>
+        </div>
+        <div class="chart-legend"><span class="lg lg-tok">Token</span><span class="lg lg-cost">成本</span></div>
+      </div>
+      <div class="card-body">
+        <svg class="trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="近 7 日 token 与成本趋势">
+          <line x1="${PAD_L}" y1="${PAD_T + plotH}" x2="${W - PAD_R}" y2="${PAD_T + plotH}" stroke="var(--line)" stroke-width="1" />
+          ${bars}
+          <polyline points="${pts}" fill="none" stroke="#de7802" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+          ${dots}
+        </svg>
+      </div>
+    </div>`;
+}
+
 function renderDashboard() {
   const o = state.overview;
-  const maxTrend = Math.max(1, ...o.trend.map((t) => t.tokens));
   const todayKey = o.today.date;
+  const yesterday = o.trend[o.trend.length - 2];
+  const mom = yesterday && yesterday.tokens > 0
+    ? Math.round(((o.today.tokens - yesterday.tokens) / yesterday.tokens) * 100)
+    : null;
+  const momText = mom == null ? '' : `<span class="delta ${mom >= 0 ? 'up' : 'down'}">${mom >= 0 ? '↑' : '↓'} ${Math.abs(mom)}% 较昨日</span>`;
 
   const kpis = `
     <div class="kpi-grid">
       <div class="kpi">
         <div class="kpi-label">今日 Token</div>
         <div class="kpi-value">${shortNum(o.today.tokens)}<small>tokens</small></div>
-        <div class="kpi-foot">今日请求 ${fmt(o.today.reqs)} 次 · ${costText(o.today.cost)}${o.nowIdle && o.hasIdlePricing ? ' · 🌙 空闲时段计价中' : ''}</div>
+        <div class="kpi-foot">今日请求 ${fmt(o.today.reqs)} 次 · ${costText(o.today.cost)}${momText}${o.nowIdle && o.hasIdlePricing ? ' · 空闲时段计价中' : ''}</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">本月 Token</div>
@@ -314,30 +379,7 @@ function renderDashboard() {
       </div>
     </div>`;
 
-  const trend = `
-    <div class="card">
-      <div class="card-head">
-        <div>
-          <h3>近 7 日用量趋势</h3>
-          <div class="sub">全部员工的 token 消耗合计</div>
-        </div>
-      </div>
-      <div class="card-body">
-        <div class="chart">
-          ${o.trend.map((t) => {
-            const h = Math.max(3, Math.round((t.tokens / maxTrend) * 100));
-            const isToday = t.date === todayKey;
-            const d = new Date(t.date + 'T00:00:00');
-            return `<div class="chart-col" title="${t.date}　${fmt(t.tokens)} tokens / ${fmt(t.reqs)} 次">
-              <div class="chart-bar-wrap">
-                <div class="chart-bar ${isToday ? 'today' : ''}" style="height:${h}%"></div>
-              </div>
-              <span class="chart-x ${isToday ? 'today' : ''}">${isToday ? '今天' : (d.getMonth() + 1) + '/' + d.getDate()}</span>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>
-    </div>`;
+  const trend = trendChartHtml(o.trend, todayKey);
 
   const deptRank = `
     <div class="card">
@@ -439,9 +481,8 @@ function renderDashboard() {
 
 // ---------------------------------------------------------------- 部门页
 
-function renderDepartments() {
-  const items = state.depts;
-  const rows = items.map((d) => `
+function deptRowsHtml(list) {
+  return list.map((d) => `
     <tr>
       <td>
         <div class="cell-main">${esc(d.name)}
@@ -469,30 +510,73 @@ function renderDepartments() {
         <button class="btn-link danger" data-act="del-dept" data-id="${d.id}">删除</button>
       </td>
     </tr>`).join('');
+}
+
+function renderDepartments() {
+  if (!state.deptSort) state.deptSort = { key: 'name', dir: 'asc' };
+  const flat = state.depts.map((d) => ({
+    ...d,
+    _sort: {
+      name: d.name,
+      employeeCount: d.employeeCount || 0,
+      dailyTokens: d.quota?.dailyTokens || 0,
+      monthlyTokens: d.quota?.monthlyTokens || 0,
+      dayTokens: d.usage?.dayTokens || 0,
+      rpm: d.quota?.rpm || 0,
+      status: d.status === 'active' ? '启用' : '停用',
+    },
+  }));
+  const items = sortRows(flat, state.deptSort, '_sort');
 
   $('#view').innerHTML = `
     <div class="toolbar">
       <div class="toolbar-left">
-        <span class="tag tag-grey">${items.length} 个部门</span>
+        <span class="tag tag-grey">${state.depts.length} 个部门</span>
       </div>
       <button class="btn btn-primary btn-sm" data-act="new-dept">${ICON.plus} 新建部门</button>
     </div>
     <div class="card">
       <div class="card-body tight table-wrap">
-        <table class="tbl">
+        <table class="tbl sortable-tbl" id="dept-tbl">
           <thead><tr>
-            <th>部门</th><th>人数</th><th>日 Token 额度</th><th>月 Token 额度</th>
-            <th style="width:160px">今日用量</th><th>RPM</th><th>状态</th><th style="width:110px">操作</th>
+            ${genericTh('name', '部门', state.deptSort)}${genericTh('employeeCount', '人数', state.deptSort)}
+            ${genericTh('dailyTokens', '日 Token 额度', state.deptSort)}${genericTh('monthlyTokens', '月 Token 额度', state.deptSort)}
+            ${genericTh('dayTokens', '今日用量', state.deptSort)}${genericTh('rpm', 'RPM', state.deptSort)}
+            ${genericTh('status', '状态', state.deptSort)}<th style="width:110px">操作</th>
           </tr></thead>
-          <tbody>${rows || '<tr><td colspan="8" class="empty"><strong>还没有部门</strong>先创建部门，员工才能继承额度</td></tr>'}</tbody>
+          <tbody id="dept-tbody">${items.length ? deptRowsHtml(items) : '<tr><td colspan="8" class="empty"><strong>还没有部门</strong>先创建部门，员工才能继承额度</td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
+
+  $$('#dept-tbl th[data-sort-key]').forEach((th) => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sortKey;
+      if (state.deptSort.key === key) state.deptSort.dir = state.deptSort.dir === 'asc' ? 'desc' : 'asc';
+      else state.deptSort = { key, dir: 'asc' };
+      const flat2 = state.depts.map((d) => ({
+        ...d,
+        _sort: {
+          name: d.name, employeeCount: d.employeeCount || 0,
+          dailyTokens: d.quota?.dailyTokens || 0, monthlyTokens: d.quota?.monthlyTokens || 0,
+          dayTokens: d.usage?.dayTokens || 0, rpm: d.quota?.rpm || 0,
+          status: d.status === 'active' ? '启用' : '停用',
+        },
+      }));
+      const sorted = sortRows(flat2, state.deptSort, '_sort');
+      $('#dept-tbody').innerHTML = sorted.length ? deptRowsHtml(sorted) : '<tr><td colspan="8" class="empty"><strong>还没有部门</strong></td></tr>';
+      $$('#dept-tbl th[data-sort-key]').forEach((x) => {
+        const active = x.dataset.sortKey === state.deptSort.key;
+        x.classList.toggle('sorted', active);
+        x.textContent = x.textContent.replace(/ [↑↓]$/, '') + (active ? (state.deptSort.dir === 'asc' ? ' ↑' : ' ↓') : '');
+      });
+    });
+  });
 }
 
 // ---------------------------------------------------------------- 员工页
 
-function renderEmployees() {
+function filteredEmployees() {
   const f = state.filters;
   let list = state.emps;
   if (f.empDept) list = list.filter((e) => e.deptId === f.empDept);
@@ -500,8 +584,22 @@ function renderEmployees() {
     const k = f.empKeyword.toLowerCase();
     list = list.filter((e) => e.name.toLowerCase().includes(k) || (e.email || '').toLowerCase().includes(k));
   }
+  // 给排序挂平铺字段（不改原对象）
+  const flat = list.map((e) => ({
+    ...e,
+    _sort: {
+      name: e.name,
+      deptName: e.quotaSnapshot?.deptName || '',
+      monthTokens: e.quotaSnapshot?.usage?.monthTokens || 0,
+      status: e.status === 'active' ? '启用' : '停用',
+    },
+  }));
+  const sorted = sortRows(flat, state.empSort, '_sort');
+  return sorted;
+}
 
-  const rows = list.map((e) => {
+function empRowsHtml(list) {
+  return list.map((e) => {
     const s = e.quotaSnapshot;
     const daily = s.fields.dailyTokens;
     const alertTag = e.alert && e.alert.enabled
@@ -532,7 +630,7 @@ function renderEmployees() {
         <td class="num nowrap">${shortNum(s.usage.monthTokens)}</td>
         <td class="nowrap">
           <span class="tag ${e.status === 'active' ? 'tag-ok' : 'tag-grey'}">
-            <span class="dot ${e.status === 'active' ? '' : 'off'}"></span>${e.status === 'active' ? '正常' : '停用'}
+            <span class="dot ${e.status === 'active' ? '' : 'off'}"></span>${e.status === 'active' ? '启用' : '停用'}
           </span>
         </td>
         <td class="nowrap">
@@ -541,6 +639,22 @@ function renderEmployees() {
         </td>
       </tr>`;
   }).join('');
+}
+
+/** 只更新员工表体与计数，保留搜索框焦点与输入法组合状态 */
+function refreshEmpTable() {
+  const list = filteredEmployees();
+  const tbody = $('#emp-tbody');
+  if (tbody) tbody.innerHTML = list.length ? empRowsHtml(list)
+    : '<tr><td colspan="8" class="empty"><strong>没有匹配的员工</strong>换个关键词，或者新增一位；也可以在「扩展插件」里从飞书 / 企业微信 / 文本批量导入</td></tr>';
+  const cnt = $('#emp-count');
+  if (cnt) cnt.textContent = list.length + ' 人';
+}
+
+function renderEmployees() {
+  const f = state.filters;
+  if (!state.empSort) state.empSort = { key: 'name', dir: 'asc' };
+  const list = filteredEmployees();
 
   $('#view').innerHTML = `
     <div class="notice notice-info">
@@ -555,19 +669,21 @@ function renderEmployees() {
           <option value="">全部部门</option>
           ${state.depts.map((d) => `<option value="${d.id}" ${f.empDept === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}
         </select>
-        <span class="tag tag-grey">${list.length} 人</span>
+        <span class="tag tag-grey" id="emp-count">${list.length} 人</span>
       </div>
       <button class="btn btn-primary btn-sm" data-act="new-emp">${ICON.plus} 新增员工</button>
     </div>
 
     <div class="card">
       <div class="card-body tight table-wrap">
-        <table class="tbl">
+        <table class="tbl sortable-tbl">
           <thead><tr>
-            <th>员工</th><th>部门</th><th>API Key</th><th>额度来源</th>
-            <th style="width:170px">今日用量</th><th>本月 Token</th><th>状态</th><th style="width:130px">操作</th>
+            ${genericTh('name', '员工', state.empSort)}${genericTh('deptName', '部门', state.empSort)}
+            <th>API Key</th><th>额度来源</th>
+            <th style="width:170px">今日用量</th>${genericTh('monthTokens', '本月 Token', state.empSort)}
+            ${genericTh('status', '状态', state.empSort)}<th style="width:130px">操作</th>
           </tr></thead>
-          <tbody>${rows || '<tr><td colspan="8" class="empty"><strong>没有匹配的员工</strong>换个关键词，或者新增一位；也可以在「扩展插件」里从飞书 / 企业微信 / 文本批量导入</td></tr>'}</tbody>
+          <tbody id="emp-tbody">${list.length ? empRowsHtml(list) : '<tr><td colspan="8" class="empty"><strong>没有匹配的员工</strong>换个关键词，或者新增一位；也可以在「扩展插件」里从飞书 / 企业微信 / 文本批量导入</td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
@@ -577,22 +693,34 @@ function renderEmployees() {
     search.addEventListener('input', (ev) => {
       state.filters.empKeyword = ev.target.value;
       clearTimeout(search._t);
-      search._t = setTimeout(() => {
-        const pos = search.selectionStart;
-        renderEmployees();
-        const again = $('#emp-search');
-        again.focus();
-        again.setSelectionRange(pos, pos);
-      }, 220);
+      search._t = setTimeout(() => { refreshEmpTable(); }, 180);
     });
   }
   const deptFilter = $('#emp-dept-filter');
   if (deptFilter) {
     deptFilter.addEventListener('change', (ev) => {
       state.filters.empDept = ev.target.value;
-      renderEmployees();
+      refreshEmpTable();
     });
   }
+  $$('.sortable-tbl th[data-sort-key]').forEach((th) => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sortKey;
+      if (state.empSort.key === key) state.empSort.dir = state.empSort.dir === 'asc' ? 'desc' : 'asc';
+      else state.empSort = { key, dir: 'asc' };
+      refreshEmpTable();
+      $$('.sortable-tbl th[data-sort-key]').forEach((x) => {
+        x.classList.toggle('sorted', x.dataset.sortKey === state.empSort.key);
+        x.textContent = x.textContent.replace(/ [↑↓]$/, '') + (x.dataset.sortKey === state.empSort.key ? (state.empSort.dir === 'asc' ? ' ↑' : ' ↓') : '');
+      });
+    });
+  });
+}
+
+function genericTh(key, label, sort) {
+  const active = sort && sort.key === key;
+  const arrow = active ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : '';
+  return `<th data-sort-key="${key}" class="sortable-th ${active ? 'sorted' : ''}" title="点击排序">${label}${arrow}</th>`;
 }
 
 // ---------------------------------------------------------------- 渠道页
@@ -788,18 +916,10 @@ async function renderProviders() {
 
 // ---------------------------------------------------------------- 日志页
 
-async function renderLogs() {
-  const params = new URLSearchParams();
-  if (state.filters.logStatus) params.set('status', state.filters.logStatus);
-  if (state.filters.logQ) params.set('q', state.filters.logQ);
-  const qs = params.toString();
-  const d = await api('/api/logs' + (qs ? '?' + qs : ''));
-  state.logs = d.items;
-  state.logContentMode = d.logContent || 'summary';
-
-  const rows = d.items.map((x) => `
+function logRowsHtml(items) {
+  return items.map((x) => `
     <tr>
-      <td class="nowrap" style="color:var(--muted);font-size:12px">${timeText(x.ts)}</td>
+      <td class="nowrap" style="color:var(--muted);font-size:12px" title="${esc(new Date(x.ts).toLocaleString('zh-CN', { hour12: false }))}">${timeText(x.ts)}</td>
       <td>
         <div class="cell-main">${esc(x.employeeName)}</div>
         <div class="cell-sub">${esc(x.deptName)}</div>
@@ -811,27 +931,81 @@ async function renderLogs() {
       <td class="nowrap">${esc(x.providerName)}</td>
       <td class="num nowrap">${fmt(x.totalTokens)}<div class="cell-sub num">${fmt(x.promptTokens)} / ${fmt(x.completionTokens)}</div></td>
       <td class="num nowrap">${x.cost ? `<b>${costText(x.cost)}</b>` : '<span style="color:var(--muted)">—</span>'}</td>
-      <td class="num nowrap" style="color:var(--muted)">${x.latencyMs} ms</td>
+      <td class="num nowrap" style="color:var(--muted)">${fmtLatency(x.latencyMs)}</td>
       <td class="nowrap">
         <span class="tag ${x.status === 'ok' ? 'tag-ok' : (x.status === 'rejected' ? 'tag-warn' : 'tag-danger')}">
-          ${x.status === 'ok' ? '成功' : (x.status === 'rejected' ? '配额拦截' : '失败')}
+          ${statusLabel(x.status)}
         </span>
         ${x.error ? `<div class="cell-sub" title="${esc(x.error)}">${esc(x.error.slice(0, 26))}${x.error.length > 26 ? '…' : ''}</div>` : ''}
       </td>
-      <td class="nowrap"><button class="btn-link" data-act="log-detail" data-id="${x.id}">详情</button></td>
+      <td class="nowrap">
+        <button class="btn-link" data-act="log-detail" data-id="${x.id}">详情</button>
+        <button class="btn-link" data-act="copy" data-text="${esc(x.id)}" title="复制请求 ID">复制ID</button>
+      </td>
     </tr>`).join('');
+}
+
+async function fetchLogs() {
+  const f = state.filters;
+  const params = new URLSearchParams();
+  if (f.logStatus) params.set('status', f.logStatus);
+  if (f.logQ) params.set('q', f.logQ);
+  if (f.logModel) params.set('model', f.logModel);
+  if (f.logEmp) params.set('employeeId', f.logEmp);
+  if (f.logDept) params.set('deptId', f.logDept);
+  params.set('limit', String(f.logLimit));
+  return api('/api/logs?' + params.toString());
+}
+
+/** 只刷新表格与计数，不重建筛选控件 —— 中文输入法组合期间不会打断 */
+async function refreshLogTable() {
+  const d = await fetchLogs();
+  state.logs = d.items;
+  state.logContentMode = d.logContent || 'summary';
+  const tbody = $('#log-tbody');
+  if (tbody) {
+    const sorted = sortRows(d.items, state.logSort);
+    tbody.innerHTML = sorted.length
+      ? logRowsHtml(sorted)
+      : '<tr><td colspan="9" class="empty"><strong>没有匹配的调用记录</strong>换个筛选条件试试</td></tr>';
+  }
+  const cnt = $('#log-count');
+  if (cnt) cnt.textContent = `显示 ${d.items.length} / 共 ${fmt(d.total)} 条`;
+  const more = $('#log-more');
+  if (more) more.style.display = d.items.length < d.total ? '' : 'none';
+}
+
+async function renderLogs() {
+  const f = state.filters;
+  if (!state.logSort) state.logSort = { key: 'ts', dir: 'desc' };
+  const modelSet = new Set();
+  (state.providers || []).forEach((p) => (p.models || []).forEach((m) => { if (m && m !== '*') modelSet.add(m); }));
+  state.logs.forEach((x) => modelSet.add(x.model));
+  const models = [...modelSet].sort();
 
   $('#view').innerHTML = `
     <div class="toolbar">
-      <div class="toolbar-left">
+      <div class="toolbar-left" style="flex-wrap:wrap">
         <select class="input-sm" id="log-status">
           <option value="">全部状态</option>
-          <option value="ok" ${state.filters.logStatus === 'ok' ? 'selected' : ''}>成功</option>
-          <option value="rejected" ${state.filters.logStatus === 'rejected' ? 'selected' : ''}>配额拦截</option>
-          <option value="error" ${state.filters.logStatus === 'error' ? 'selected' : ''}>失败</option>
+          <option value="ok" ${f.logStatus === 'ok' ? 'selected' : ''}>成功</option>
+          <option value="rejected" ${f.logStatus === 'rejected' ? 'selected' : ''}>配额拦截</option>
+          <option value="error" ${f.logStatus === 'error' ? 'selected' : ''}>失败</option>
         </select>
-        <input class="input-sm" type="text" id="log-q" placeholder="搜索员工 / 模型 / 提问关键词" value="${esc(state.filters.logQ || '')}" style="width:240px" />
-        <span class="tag tag-grey">最近 ${d.items.length} 条</span>
+        <select class="input-sm" id="log-model">
+          <option value="">全部模型</option>
+          ${models.map((m) => `<option value="${esc(m)}" ${f.logModel === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}
+        </select>
+        <select class="input-sm" id="log-emp">
+          <option value="">全部员工</option>
+          ${(state.emps || []).map((e) => `<option value="${esc(e.id)}" ${f.logEmp === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}
+        </select>
+        <select class="input-sm" id="log-dept">
+          <option value="">全部部门</option>
+          ${(state.depts || []).map((d) => `<option value="${esc(d.id)}" ${f.logDept === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}
+        </select>
+        <input class="input-sm" type="text" id="log-q" placeholder="搜索员工 / 模型 / 提问关键词" value="${esc(f.logQ || '')}" style="width:220px" />
+        <span class="tag tag-grey" id="log-count">载入中…</span>
       </div>
       <div class="toolbar-right">
         <span class="field-hint" style="margin:0">
@@ -843,30 +1017,79 @@ async function renderLogs() {
     </div>
     <div class="card">
       <div class="card-body tight table-wrap">
-        <table class="tbl">
+        <table class="tbl sortable-tbl">
           <thead><tr>
-            <th>时间</th><th>员工</th><th>模型 / 请求内容</th><th>渠道</th><th>Token（入/出）</th><th>成本</th><th>耗时</th><th>状态</th><th style="width:64px">操作</th>
+            ${logTh('ts', '时间')}${logTh('employeeName', '员工')}${logTh('model', '模型 / 请求内容')}
+            ${logTh('providerName', '渠道')}${logTh('totalTokens', 'Token（入/出）')}${logTh('cost', '成本')}
+            ${logTh('latencyMs', '耗时')}${logTh('status', '状态')}<th style="width:92px">操作</th>
           </tr></thead>
-          <tbody>${rows || '<tr><td colspan="9" class="empty"><strong>还没有调用记录</strong>用「接入文档」里的示例发一个请求试试</td></tr>'}</tbody>
+          <tbody id="log-tbody"><tr><td colspan="9" class="empty">载入中…</td></tr></tbody>
         </table>
+      </div>
+      <div class="card-foot" style="display:flex;justify-content:center;padding:12px">
+        <button class="btn btn-ghost btn-sm" id="log-more" data-act="log-more" style="display:none">加载更多</button>
       </div>
     </div>`;
 
-  $('#log-status').addEventListener('change', (e) => {
-    state.filters.logStatus = e.target.value;
-    renderLogs();
+  const bindSelect = (sel, key) => $(sel)?.addEventListener('change', (e) => {
+    f[key] = e.target.value;
+    f.logLimit = 100;
+    refreshLogTable().catch((err) => toast(err.message, 'err'));
   });
+  bindSelect('#log-status', 'logStatus');
+  bindSelect('#log-model', 'logModel');
+  bindSelect('#log-emp', 'logEmp');
+  bindSelect('#log-dept', 'logDept');
+
   const search = $('#log-q');
-  search.addEventListener('input', (e) => {
-    state.filters.logQ = e.target.value;
+  search?.addEventListener('input', (e) => {
+    f.logQ = e.target.value;
     clearTimeout(search._t);
     search._t = setTimeout(() => {
-      const pos = search.selectionStart;
-      renderLogs().then(() => {
-        const again = $('#log-q');
-        if (again) { again.focus(); again.setSelectionRange(pos, pos); }
-      });
+      f.logLimit = 100;
+      refreshLogTable().catch((err) => toast(err.message, 'err'));
     }, 260);
+  });
+
+  $$('.sortable-tbl th[data-sort-key]').forEach((th) => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sortKey;
+      if (state.logSort.key === key) state.logSort.dir = state.logSort.dir === 'asc' ? 'desc' : 'asc';
+      else state.logSort = { key, dir: 'asc' };
+      refreshLogTable().catch((err) => toast(err.message, 'err'));
+    });
+  });
+
+  await refreshLogTable();
+}
+
+function logTh(key, label) {
+  const s = state.logSort || { key: 'ts', dir: 'desc' };
+  const active = s.key === key;
+  const arrow = active ? (s.dir === 'asc' ? ' ↑' : ' ↓') : '';
+  return `<th data-sort-key="${key}" class="sortable-th ${active ? 'sorted' : ''}" title="点击排序">${label}${arrow}</th>`;
+}
+
+/** 前端稳定排序：数值列按数值，其余按字符串。sourceKey 用于从嵌套对象取值 */
+function sortRows(items, sort, sourceKey) {
+  if (!sort || !items || !items.length) return items || [];
+  const { key, dir } = sort;
+  const numKeys = new Set(['totalTokens', 'cost', 'latencyMs', 'percent', 'dayTokens', 'monthTokens', 'reqs', 'employeeCount', 'dailyTokens', 'monthlyTokens', 'rpm']);
+  const mul = dir === 'asc' ? 1 : -1;
+  const pick = (row) => sourceKey ? (row[sourceKey] || {})[key] : row[key];
+  return items.slice().sort((a, b) => {
+    let va = pick(a), vb = pick(b);
+    if (key === 'status' && !sourceKey) { va = statusLabel(va); vb = statusLabel(vb); }
+    if (va == null) va = '';
+    if (vb == null) vb = '';
+    if (numKeys.has(key)) {
+      const d = (Number(va) || 0) - (Number(vb) || 0);
+      if (d) return d * mul;
+    } else {
+      const d = String(va).localeCompare(String(vb), 'zh-CN');
+      if (d) return d * mul;
+    }
+    return 0;
   });
 }
 
@@ -943,7 +1166,7 @@ async function logDetail(id) {
       </div>
 
       <div class="log-facts">
-        <div><span>请求 ID</span><code>${esc(d.id)}</code></div>
+        <div><span>请求 ID</span><code>${esc(d.id)}</code> <button class="btn-link" data-act="copy" data-text="${esc(d.id)}" style="font-size:11px">复制</button></div>
         <div><span>模型</span><code>${esc(d.model)}${d.upstreamModel && d.upstreamModel !== d.model ? ' → ' + esc(d.upstreamModel) : ''}</code></div>
         <div><span>输入 tokens</span><b>${fmt(d.promptTokens)}</b></div>
         <div><span>输出 tokens</span><b>${fmt(d.completionTokens)}</b></div>
@@ -961,7 +1184,7 @@ async function logDetail(id) {
       <div class="section-label">输入内容${req && req.truncated ? '（已截断）' : ''}</div>
       <div class="log-thread">${msgHtml}</div>
 
-      <div class="section-label">输出内容${res && res.finishReason ? `（finish_reason: ${esc(res.finishReason)}）` : ''}${res && res.truncated ? ' · 已截断' : ''}</div>
+      <div class="section-label">输出内容${res && res.finishReason ? `（finish_reason: ${esc(res.finishReason)}）` : ''}${res && res.truncated ? ' · 已截断' : ''}${res && res.content ? ` <button class="btn-link" data-act="copy" data-text="${esc(res.content)}" style="font-size:11px">复制全文</button>` : ''}</div>
       ${res && res.content
         ? `<pre class="log-body" style="max-height:320px;overflow:auto">${esc(res.content)}</pre>`
         : '<p class="field-hint">没有留存输出内容。</p>'}
@@ -1119,7 +1342,7 @@ resp = client.chat.completions.create(
 
 // ---------------------------------------------------------------- 扩展插件页
 
-const PLUGIN_EMOJI = { feishu: '🐦', wecom: '💬', csv: '📄' };
+const PLUGIN_EMOJI = { feishu: '🐦', wecom: '💬', csv: '📄', api: '🔌' };
 
 function pluginStatusTag(p) {
   return p.lastSyncAt
@@ -1133,18 +1356,31 @@ function pluginFormFields(p) {
   return p.fields.map((f) => {
     const v = p.config[f.key] || '';
     const id = `pg-${p.id}-${f.key}`;
+    const hint = f.hint ? `<span class="field-hint">${esc(f.hint)}</span>` : '';
     if (f.type === 'textarea') {
-      return `<label class="field"><span>${esc(f.label)}</span><textarea id="${id}" rows="5" placeholder="${esc(f.placeholder || '')}">${esc(v)}</textarea>${f.hint ? `<span class="field-hint">${esc(f.hint)}</span>` : ''}</label>`;
+      return `<label class="field"><span>${esc(f.label)}</span><textarea id="${id}" rows="5" placeholder="${esc(f.placeholder || '')}">${esc(v)}</textarea>${hint}</label>`;
     }
-    return `<label class="field"><span>${esc(f.label)}</span><input type="${f.type === 'password' ? 'password' : 'text'}" id="${id}" value="${esc(v)}" placeholder="${esc(f.placeholder || '')}" />${f.hint ? `<span class="field-hint">${esc(f.hint)}</span>` : ''}</label>`;
+    if (f.type === 'select') {
+      const opts = (f.options || []).map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(v) ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+      return `<label class="field"><span>${esc(f.label)}</span><select id="${id}">${opts}</select>${hint}</label>`;
+    }
+    return `<label class="field"><span>${esc(f.label)}</span><input type="${f.type === 'password' ? 'password' : 'text'}" id="${id}" value="${esc(v)}" placeholder="${esc(f.placeholder || '')}" />${hint}</label>`;
   }).join('');
 }
 
-const PLUGIN_SYNC_RULE_HTML = `
+function pluginSyncRuleHtml(p) {
+  const full = p.id === 'api' && p.config.syncMode === 'full';
+  return `
   <div class="notice notice-info">
     ${ICON.info}
-    <div><b>同步规则：</b>部门按名称合并（已存在则不动），员工按邮箱（其次同名）匹配——已有员工只更新归属部门，<b>不会改动任何已设置的额度与密钥</b>；新员工自动签发虚拟 Key。同步可反复执行，不会产生重复数据。</div>
+    <div><b>同步规则：</b>部门按名称合并（API 插件可额外用源端 ID 匹配），员工按邮箱（其次同名）匹配——已有员工只更新归属部门与外部 ID，<b>不会改动任何已设置的额度与密钥</b>；新员工自动签发虚拟 Key。同步可反复执行，不会产生重复数据。${
+      p.id === 'api'
+        ? (full
+          ? '<br><b style="color:var(--danger)">当前为全量镜像模式：</b>源端已不存在的部门/员工会被删除，但只限于本插件同步创建的数据，手工录入的人员不会被删。删除后其虚拟 Key 立即失效。'
+          : '<br>当前为增量合并模式：源端删除的人员不会被移除。需要镜像源端人员变动时，把「同步模式」切换为全量镜像。')
+        : ''}</div>
   </div>`;
+}
 
 /** 一级页：插件列表（点卡片进入对应插件） */
 async function renderPlugins() {
@@ -1226,7 +1462,7 @@ async function renderPluginDetail(id) {
       </div>
     </div>
 
-    <div style="margin-top:16px">${PLUGIN_SYNC_RULE_HTML}</div>`;
+    <div style="margin-top:16px">${pluginSyncRuleHtml(p)}</div>`;
 }
 
 // ---------------------------------------------------------------- 系统设置
@@ -1277,7 +1513,7 @@ async function renderSettings() {
               <span class="switch-label">没有可用渠道时返回内置模拟响应</span>
             </label>
           </div>
-          <button class="btn btn-primary btn-sm" data-act="save-settings">保存设置</button>
+          <button class="btn btn-primary btn-sm" data-act="save-settings" title="保存本页所有设置（基础、日志、告警等）">保存全部设置</button>
         </div>
       </div>
 
@@ -1332,7 +1568,7 @@ async function renderSettings() {
               <span class="field-hint">之后按 ×2 递增并加随机抖动；上游给了 <code>Retry-After</code> 就听它的（上限 10 秒）。</span>
             </label>
           </div>
-          <button class="btn btn-primary btn-sm" data-act="save-settings">保存设置</button>
+          <button class="btn btn-primary btn-sm" data-act="save-settings" title="保存本页所有设置（基础、日志、告警等）">保存全部设置</button>
         </div>
       </div>
     </div>
@@ -1371,7 +1607,7 @@ async function renderSettings() {
             <div><b>告警通道的继承顺序：</b>员工自己的 Webhook → 所属部门的 Webhook → 这里的全局机器人。阈值与维度同理。给每个部门单独建群，就能做到「谁超了只通知谁」。</div>
           </div>
           <div style="display:flex;gap:10px">
-            <button class="btn btn-primary btn-sm" data-act="save-settings">保存设置</button>
+            <button class="btn btn-primary btn-sm" data-act="save-settings" title="保存本页所有设置（基础、日志、告警等）">保存全部设置</button>
             <button class="btn btn-ghost btn-sm" data-act="test-webhook">发送测试消息</button>
           </div>
           ${ownRoutes.length ? `<p class="field-hint" style="margin-top:10px">已配置独立通道：${ownRoutes.join('、')}</p>` : ''}
@@ -1418,8 +1654,9 @@ async function renderSettings() {
         <div class="card-head"><div><h3>数据备份</h3><div class="sub">导出配置（不含真实密钥与密码）</div></div></div>
         <div class="card-body">
           <p class="field-hint" style="margin-top:0;font-size:13px">
-            所有数据保存在 <code style="font-family:var(--mono)">data/db.json</code>，直接复制该文件即可完成备份。
-            下面是脱敏后的配置导出，适合排查问题或迁移结构。
+            v1.7.0 起数据保存在 <b>MySQL</b>（连接串见 <code style="font-family:var(--mono)">.env</code>），完整备份请用
+            <code style="font-family:var(--mono)">mysqldump</code>（见「告警与运维手册」§4），不要依赖目录里的旧 <code style="font-family:var(--mono)">db.json</code>。
+            下面是脱敏后的配置导出（不含真实密钥与密码），适合排查问题或迁移结构。
           </p>
           <button class="btn btn-ghost btn-sm" data-act="export">下载脱敏配置</button>
         </div>
@@ -1431,6 +1668,11 @@ async function renderSettings() {
 
 function closeModal() {
   $('#modal-root').innerHTML = '';
+  if (typeof state._confirmResolve === 'function') {
+    const done = state._confirmResolve;
+    delete state._confirmResolve;
+    done(false);
+  }
 }
 
 function openModal({ title, sub, body, footer, wide }) {
@@ -1448,6 +1690,40 @@ function openModal({ title, sub, body, footer, wide }) {
         <div class="modal-foot">${footer}</div>
       </div>
     </div>`;
+}
+
+/**
+ * 统一的确认弹窗，替代原生 confirm（风格与界面一致，可展示影响范围）。
+ * 返回 Promise<boolean>：点确定 true，取消 / 关闭 / Esc / 点遮罩 false。
+ */
+function confirmDialog({ title = '请确认', message = '', detail = '', danger = false, okText = '确定', needType = '' } = {}) {
+  return new Promise((resolve) => {
+    const mask = danger ? 'notice-danger' : 'notice-warn';
+    openModal({
+      title,
+      body: `
+        <div class="notice ${mask}" style="margin:0">
+          ${ICON.warn}<div style="white-space:pre-wrap">${esc(message)}</div>
+        </div>
+        ${detail ? `<div class="field-hint" style="margin-top:12px">${detail}</div>` : ''}
+        ${needType ? `<label class="field" style="margin-top:14px"><span>输入 <code>${esc(needType)}</code> 以确认</span><input type="text" id="confirm-type" autocomplete="off" /></label>` : ''}`,
+      footer: `<button class="btn btn-ghost" data-act="confirm-cancel">取消</button>
+               <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-act="confirm-ok">${esc(okText)}</button>`,
+    });
+    const cleanup = (val) => {
+      delete state._confirmResolve;
+      closeModal();
+      resolve(val);
+    };
+    state._confirmResolve = cleanup;
+    const ok = $('[data-act="confirm-ok"]');
+    if (needType && ok) ok.disabled = true;
+    if (needType) {
+      const input = $('#confirm-type');
+      input?.addEventListener('input', () => { if (ok) ok.disabled = input.value.trim() !== needType; });
+      input?.focus();
+    }
+  });
 }
 
 // ---------------------------------------------------------------- 部门表单
@@ -2345,6 +2621,20 @@ document.addEventListener('click', async (ev) => {
 
   try {
     switch (act) {
+      case 'confirm-ok': {
+        if (el.disabled) break;
+        if (typeof state._confirmResolve === 'function') {
+          const done = state._confirmResolve;
+          delete state._confirmResolve;
+          $('#modal-root').innerHTML = '';
+          done(true);
+        }
+        break;
+      }
+      case 'confirm-cancel':
+        closeModal();
+        break;
+
       case 'close-modal':
         closeModal();
         break;
@@ -2416,7 +2706,13 @@ document.addEventListener('click', async (ev) => {
 
       case 'del-dept': {
         const d = state.depts.find((x) => x.id === id);
-        if (!confirm(`确定删除部门「${d.name}」？`)) return;
+        const empCount = (d && d.employeeCount) || 0;
+        if (!await confirmDialog({
+          title: '删除部门',
+          message: `确定删除部门「${d ? d.name : ''}」？`,
+          detail: empCount ? `该部门下还有 <b>${empCount} 名员工</b>，需先转移或删除才能删除部门。` : '此操作不可撤销。',
+          danger: true, okText: '确认删除',
+        })) return;
         await api(`/api/departments/${id}`, { method: 'DELETE' });
         await refreshAll();
         navigate('departments');
@@ -2481,6 +2777,12 @@ document.addEventListener('click', async (ev) => {
         await logDetail(id);
         break;
 
+      case 'log-more': {
+        state.filters.logLimit = Math.min(500, state.filters.logLimit + 100);
+        await refreshLogTable();
+        break;
+      }
+
       case 'edit-pricing':
         pricingForm(el.dataset.model);
         break;
@@ -2528,7 +2830,11 @@ document.addEventListener('click', async (ev) => {
       }
 
       case 'rotate-key': {
-        if (!confirm('重置后旧密钥立即失效，确定继续？')) return;
+        if (!await confirmDialog({
+          title: '重置 API Key',
+          message: '重置后旧密钥立即失效，使用该密钥的应用需要同步更换。',
+          danger: true, okText: '确认重置',
+        })) return;
         const r = await api(`/api/employees/${id}/rotate`, { method: 'POST' });
         closeModal();
         state.emps = (await api('/api/employees')).items;
@@ -2572,7 +2878,13 @@ document.addEventListener('click', async (ev) => {
       }
 
       case 'del-provider': {
-        if (!confirm('确定删除该渠道？')) return;
+        const pv = state.providers.find((x) => x.id === id);
+        if (!await confirmDialog({
+          title: '删除上游渠道',
+          message: `确定删除渠道「${pv ? pv.name : ''}」？`,
+          detail: '删除后该渠道不再参与分流，正在使用它的请求会自动切到其他渠道。此操作不可撤销。',
+          danger: true, okText: '确认删除',
+        })) return;
         await api(`/api/providers/${id}`, { method: 'DELETE' });
         await refreshAll();
         navigate('providers');
@@ -2654,10 +2966,12 @@ document.addEventListener('click', async (ev) => {
       }
 
       case 'load-presets': {
-        const ok = window.confirm(
-          '将写入内置官方参考价（各厂商官方价，美元按汇率折算）。\n\n' +
-          '同名模型的单价会被覆盖，自定义的其他模型保持不变。\n\n继续？',
-        );
+        const ok = await confirmDialog({
+          title: '载入官方参考价',
+          message: '将写入内置官方参考价（各厂商官方价，美元按汇率折算）。',
+          detail: '同名模型的单价会被覆盖，自定义的其他模型保持不变。',
+          okText: '确认载入',
+        });
         if (!ok) break;
         const r = await api('/api/pricing/presets', { method: 'POST', body: JSON.stringify({ overwrite: true }) });
         await renderProviders();
@@ -2753,8 +3067,12 @@ document.addEventListener('click', async (ev) => {
       }
 
       case 'reset-data': {
-        if (!confirm('确定清空所有部门、员工、调用日志与统计数据？\n\n上游渠道与模型配置会保留，清空前会自动生成备份文件。')) return;
-        if (!confirm('再次确认：此操作不可撤销（除非手工恢复备份文件），继续吗？')) return;
+        if (!await confirmDialog({
+          title: '清空业务数据',
+          message: '将清空所有部门、员工、调用日志与统计数据。上游渠道与模型单价、平台设置会保留。',
+          detail: '清空前会自动生成脱敏备份快照。<b>此操作不可撤销</b>，请输入 <code>CLEAR</code> 确认。',
+          danger: true, okText: '确认清空', needType: 'CLEAR',
+        })) return;
         const r = await api('/api/reset-data', { method: 'POST' });
         closeModal();
         await refreshAll();
@@ -2839,6 +3157,16 @@ document.addEventListener('click', async (ev) => {
 });
 
 // ---------------------------------------------------------------- 启动
+
+function closeNav() {
+  $('.sidebar')?.classList.remove('open');
+  $('#nav-mask')?.classList.remove('open');
+}
+$('#nav-toggle')?.addEventListener('click', () => {
+  $('.sidebar')?.classList.toggle('open');
+  $('#nav-mask')?.classList.toggle('open');
+});
+$('#nav-mask')?.addEventListener('click', closeNav);
 
 $('#login-form').addEventListener('submit', doLogin);
 $('#logout-btn').addEventListener('click', () => {

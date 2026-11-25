@@ -35,6 +35,7 @@
 
 <!-- ============ 主体 ============ -->
 <div id="app" class="app hidden">
+  <div class="nav-mask" id="nav-mask"></div>
   <aside class="sidebar">
     <div class="brand">
       <svg viewBox="0 0 32 32" width="28" height="28"><rect width="32" height="32" rx="9" fill="#3370ff"/><path d="M9 21l4-10 4 10M10.5 17.5h5M20 11v10" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -57,6 +58,9 @@
         <p id="page-sub" class="page-sub"></p>
       </div>
       <div class="topbar-right">
+        <button class="btn btn-ghost btn-sm nav-toggle" id="nav-toggle" aria-label="打开导航菜单">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
         <span class="env-badge" id="env-badge">网关运行中</span>
         <button class="btn btn-ghost btn-sm" id="refresh-btn">刷新</button>
       </div>

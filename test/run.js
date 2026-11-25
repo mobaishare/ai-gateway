@@ -183,6 +183,40 @@ function startWebhook(port) {
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, messages })));
 }
 
+/**
+ * 假组织架构 API：模拟自建 HR 系统，校验独立 API Key 后返回部门/员工。
+ * 返回结构故意用 {items:[...]} 和 {data:[...]} 两种，验证解析兼容性。
+ */
+function startOrgApi(port) {
+  const http = require('http');
+  const state = {
+    headers: [],
+    depts: [
+      { open_department_id: 'D1', name: '插件研发部' },
+      { open_department_id: 'D2', name: '插件市场部' },
+    ],
+    emps: [
+      { user_id: 'U1', name: '插件员-甲', email: 'plugin-a@example.com', department: { name: '插件研发部' } },
+      { user_id: 'U2', name: '插件员-乙', email: 'plugin-b@example.com', department_name: '插件市场部' },
+    ],
+  };
+  const server = http.createServer((req, res) => {
+    state.headers.push(req.headers);
+    if (req.headers['x-api-key'] !== 'test-org-key') {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ message: 'bad api key' }));
+    }
+    const isDept = req.url.startsWith('/departments');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(isDept
+      ? { items: state.depts }
+      : { data: state.emps }));
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => {
+    resolve({ server, state, port: server.address().port });
+  }));
+}
+
 /** 反复调用直到被拦截，返回拦截信息 */
 async function callUntilBlocked(key, maxCalls = 60) {
   for (let i = 0; i < maxCalls; i++) {
@@ -231,6 +265,7 @@ async function callUntilBlocked(key, maxCalls = 60) {
   const hookGlobal = await startWebhook(8796);
   const hookDept = await startWebhook(8795);
   const hookEmp = await startWebhook(8794);
+  const orgApi = await startOrgApi(0); // 自动分配端口，避免和 ⑬b 组的假上游撞端口
 
   try {
     await waitReady();
@@ -1162,6 +1197,116 @@ async function callUntilBlocked(key, maxCalls = 60) {
     check('服务端无 MySQL 同步失败', syncErrors.length === 0,
       syncErrors.slice(0, 2).join(' | '));
 
+    // ============================================================
+    section('㉑ 扩展插件：HTTP API 同步（独立 API Key + 增改删）');
+
+    const apiCfg = {
+      apiBase: `http://127.0.0.1:${orgApi.port}`,
+      deptPath: '/departments',
+      empPath: '/employees',
+      authHeader: 'X-API-Key',
+      apiKey: 'test-org-key',
+      syncMode: 'merge',
+    };
+    const plugList = await req('/api/plugins', { token: T });
+    check('插件列表包含 HTTP API 插件', plugList.data.items.some((x) => x.id === 'api' && x.fields.some((f) => f.type === 'select')),
+      JSON.stringify(plugList.data.items.map((x) => x.id)));
+
+    const badKey = await req('/api/plugins/api/test', {
+      method: 'POST', token: T, body: { config: { ...apiCfg, apiKey: 'wrong' } },
+    });
+    check('错误 API Key 连接测试失败', badKey.data.ok === false && /bad api key|401/.test(JSON.stringify(badKey.data)),
+      JSON.stringify(badKey.data));
+
+    const headersBefore = orgApi.state.headers.length;
+    const okTest = await req('/api/plugins/api/test', { method: 'POST', token: T, body: { config: apiCfg } });
+    check('正确 API Key 连接测试通过且识别两种返回结构',
+      okTest.status === 200 && okTest.data.ok && /2 个部门、2 名员工/.test(okTest.data.message),
+      JSON.stringify(okTest.data));
+    const newHeaders = orgApi.state.headers.slice(headersBefore);
+    check('请求带上了独立 API Key 头', newHeaders.length >= 1 && newHeaders.every((h) => h['x-api-key'] === 'test-org-key'),
+      JSON.stringify(newHeaders.slice(0, 2)));
+
+    const sync1 = await req('/api/plugins/api/sync', { method: 'POST', token: T, body: { config: apiCfg } });
+    check('首次同步新建部门与员工',
+      sync1.status === 200 && sync1.data.deptsCreated === 2 && sync1.data.empsCreated === 2,
+      JSON.stringify(sync1.data));
+    const afterSync1 = await req('/api/employees', { token: T });
+    const empA = afterSync1.data.items.find((x) => x.email === 'plugin-a@example.com');
+    check('同步使用源端 ID 匹配且不覆盖平台字段',
+      !!empA && empA.source === 'plugin:api' && !!empA.key && empA.name === '插件员-甲',
+      JSON.stringify(empA));
+    const keyA = empA.key;
+    const deptA = (await req('/api/departments', { token: T })).data.items.find((x) => x.name === '插件研发部');
+    // 给同步来的员工设一个个人额度，后续同步不能覆盖它
+    await req(`/api/employees/${empA.id}`, {
+      method: 'PUT', token: T,
+      body: { ...empA, override: { enabled: true, dailyTokens: 12345, countAgainstDept: true } },
+    });
+
+    // 源端：改名、换部门、加人 —— 再次同步应更新而不是重建
+    orgApi.state.emps = [
+      { user_id: 'U1', name: '插件员-甲改名', email: 'plugin-a@example.com', department_name: '插件市场部' },
+      { user_id: 'U2', name: '插件员-乙', email: 'plugin-b@example.com', department_name: '插件市场部' },
+      { user_id: 'U3', name: '插件员-丙', email: 'plugin-c@example.com', department_name: '插件研发部' },
+    ];
+    orgApi.state.depts = [
+      { open_department_id: 'D1', name: '插件研发部' },
+      { open_department_id: 'D2', name: '插件市场部' },
+      { open_department_id: 'D3', name: '插件新增部' },
+    ];
+    const sync2 = await req('/api/plugins/api/sync', { method: 'POST', token: T, body: { config: apiCfg } });
+    check('再次同步：按源端 ID 更新姓名/部门并新建',
+      sync2.status === 200 && sync2.data.empsUpdated === 1 && sync2.data.empsCreated === 1 && sync2.data.deptsCreated === 1,
+      JSON.stringify(sync2.data));
+    const afterSync2 = (await req('/api/employees', { token: T })).data.items;
+    const empA2 = afterSync2.find((x) => x.email === 'plugin-a@example.com');
+    check('更新保留原虚拟 Key 与个人额度',
+      !!empA2 && empA2.key === keyA && empA2.override?.dailyTokens === 12345,
+      JSON.stringify({ key: empA2?.key, daily: empA2?.override?.dailyTokens }));
+    check('换部门后归属正确',
+      empA2?.deptName === '插件市场部', empA2?.deptName);
+
+    // 手工录入一个员工：全量同步不能删
+    const manual = await req('/api/employees', {
+      method: 'POST', token: T,
+      body: { name: '手工录入不受影响', email: 'manual@example.com', deptId: deptA.id },
+    });
+    check('手工录入员工创建成功', manual.status === 200, JSON.stringify(manual.data));
+
+    // 全量镜像：源端删掉 U2，并移除部门 D1（但 D1 下有手工员工 + U3，应保留）
+    orgApi.state.emps = orgApi.state.emps.filter((x) => x.user_id !== 'U2');
+    orgApi.state.depts = [
+      { open_department_id: 'D2', name: '插件市场部' },
+      { open_department_id: 'D3', name: '插件新增部' },
+    ];
+    const fullCfg = { ...apiCfg, syncMode: 'full' };
+    const sync3 = await req('/api/plugins/api/sync', { method: 'POST', token: T, body: { config: fullCfg } });
+    check('全量同步删除源端已不存在的员工', sync3.status === 200 && sync3.data.empsDeleted === 1,
+      JSON.stringify(sync3.data));
+    const afterSync3 = (await req('/api/employees', { token: T })).data.items;
+    check('被删员工不再是平台员工', !afterSync3.some((x) => x.email === 'plugin-b@example.com'));
+    check('手工录入员工未被删除', afterSync3.some((x) => x.email === 'manual@example.com'));
+    check('仍有员工在用的部门未被删除',
+      (await req('/api/departments', { token: T })).data.items.some((x) => x.name === '插件研发部'));
+
+    // 被删员工的旧 Key 应立即失效
+    const empB = afterSync2.find((x) => x.email === 'plugin-b@example.com');
+    const oldKeyCall = await req('/v1/chat/completions', {
+      method: 'POST', token: empB.key,
+      body: { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] },
+    });
+    check('被删员工的旧 Key 立即失效', oldKeyCall.status === 401,
+      `HTTP ${oldKeyCall.status} ${JSON.stringify(oldKeyCall.data).slice(0, 120)}`);
+
+    // 增量模式不删除
+    orgApi.state.emps = orgApi.state.emps.filter((x) => x.user_id !== 'U1');
+    const mergeSync = await req('/api/plugins/api/sync', { method: 'POST', token: T, body: { config: apiCfg } });
+    check('增量模式不删除源端已不存在的员工',
+      mergeSync.status === 200 && (mergeSync.data.empsDeleted || 0) === 0
+      && (await req('/api/employees', { token: T })).data.items.some((x) => x.email === 'plugin-a@example.com'),
+      JSON.stringify(mergeSync.data));
+
   } catch (e) {
     fail++;
     failures.push('测试执行异常：' + e.message);
@@ -1174,6 +1319,7 @@ async function callUntilBlocked(key, maxCalls = 60) {
     hookGlobal.server.close();
     hookDept.server.close();
     hookEmp.server.close();
+    orgApi.server.close();
     await sleep(200);
     try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
   }
